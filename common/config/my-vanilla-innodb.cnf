@@ -1,0 +1,21 @@
+[mysqld]
+# Vanilla MySQL 8.4.7 with InnoDB
+user = mysql
+port = 3306
+socket = /tmp/mysql_vanilla_innodb.sock
+pid-file = /tmp/mysql_vanilla_innodb.pid
+datadir = /mnt/nvme/mysql-vanilla-innodb/data
+
+# Storage Engine
+default-storage-engine = InnoDB
+
+# Disable logging for benchmarking (standard practice)
+skip-log-bin
+slow_query_log = 0
+general_log = 0
+
+# Disable Performance Schema (standard for benchmarks)
+performance_schema = OFF
+
+[client]
+socket = /tmp/mysql_vanilla_innodb.sock
