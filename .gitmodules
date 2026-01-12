@@ -1,5 +1,5 @@
 [submodule "tpcc/tpcc"]
-	path = tpcc/tpcc
+	path = tpcc/tpcc-mysql
 	url = https://github.com/Percona-Lab/tpcc-mysql.git
 [submodule "sysbench-tpcc/sysbench-tpcc"]
 	path = sysbench-tpcc/sysbench-tpcc
