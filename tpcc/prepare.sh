@@ -61,11 +61,21 @@ fi
 # Build tpcc-mysql
 log_info "Building tpcc-mysql..."
 cd "$TPCC_DIR/src"
+
+# Remove old binaries to ensure fresh build check
+rm -f ../tpcc_load ../tpcc_start
+
 make clean
-make
+if ! make; then
+    log_error "Failed to build tpcc-mysql"
+    log_error "Make sure MySQL development libraries are installed:"
+    log_error "  Ubuntu/Debian: sudo apt install libmysqlclient-dev"
+    log_error "  RHEL/CentOS: sudo yum install mysql-devel"
+    exit 1
+fi
 
 if [ ! -f "../tpcc_load" ] || [ ! -f "../tpcc_start" ]; then
-    log_error "Failed to build tpcc-mysql"
+    log_error "Failed to build tpcc-mysql - binaries not found"
     exit 1
 fi
 
