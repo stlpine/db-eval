@@ -89,13 +89,23 @@ def plot_tpcc(csv_file, output_dir):
     """Plot TPC-C results"""
     df = pd.read_csv(csv_file)
 
+    # Handle both engine naming conventions
+    engine_map = {
+        'vanilla-innodb': 'Vanilla InnoDB',
+        'percona-innodb': 'Percona InnoDB',
+        'percona-myrocks': 'Percona MyRocks',
+        'innodb': 'InnoDB',
+        'myrocks': 'MyRocks'
+    }
+
     # Plot TpmC
     fig, ax = plt.subplots(figsize=(12, 6))
 
-    for engine in ['innodb', 'myrocks']:
+    for engine in df['engine'].unique():
         engine_df = df[df['engine'] == engine]
+        label = engine_map.get(engine, engine.upper())
         ax.plot(engine_df['threads'], engine_df['tpmC'],
-               marker='o', label=engine.upper(), linewidth=2, markersize=8)
+               marker='o', label=label, linewidth=2, markersize=8)
 
     ax.set_xlabel('Threads', fontsize=12)
     ax.set_ylabel('TpmC (Transactions per Minute)', fontsize=12)
@@ -108,26 +118,85 @@ def plot_tpcc(csv_file, output_dir):
     plt.savefig(f"{output_dir}/tpcc_tpmC.png", dpi=300)
     plt.close()
 
-    # Plot speedup
-    innodb_df = df[df['engine'] == 'innodb'].set_index('threads')
-    myrocks_df = df[df['engine'] == 'myrocks'].set_index('threads')
+    # Plot speedup (if exactly 2 engines for pairwise comparison)
+    unique_engines = df['engine'].unique()
+    if len(unique_engines) == 2:
+        innodb_engine = None
+        myrocks_engine = None
 
-    speedup = myrocks_df['tpmC'] / innodb_df['tpmC']
+        for engine in unique_engines:
+            if 'innodb' in engine:
+                innodb_engine = engine
+            elif 'myrocks' in engine:
+                myrocks_engine = engine
 
-    fig, ax = plt.subplots(figsize=(12, 6))
-    ax.plot(speedup.index, speedup.values, marker='o', linewidth=2, markersize=8, color='green')
-    ax.axhline(y=1.0, color='r', linestyle='--', label='Equal Performance')
+        if innodb_engine and myrocks_engine:
+            innodb_df = df[df['engine'] == innodb_engine].set_index('threads')
+            myrocks_df = df[df['engine'] == myrocks_engine].set_index('threads')
 
-    ax.set_xlabel('Threads', fontsize=12)
-    ax.set_ylabel('Speedup (MyRocks / InnoDB)', fontsize=12)
-    ax.set_title('TPC-C Speedup: MyRocks vs InnoDB', fontsize=14)
-    ax.legend(fontsize=11)
-    ax.grid(True, alpha=0.3)
-    ax.set_xscale('log', base=2)
+            speedup = myrocks_df['tpmC'] / innodb_df['tpmC']
 
-    plt.tight_layout()
-    plt.savefig(f"{output_dir}/tpcc_speedup.png", dpi=300)
-    plt.close()
+            fig, ax = plt.subplots(figsize=(12, 6))
+            ax.plot(speedup.index, speedup.values, marker='o', linewidth=2, markersize=8, color='green')
+            ax.axhline(y=1.0, color='r', linestyle='--', label='Equal Performance')
+
+            ax.set_xlabel('Threads', fontsize=12)
+            ax.set_ylabel('Speedup (MyRocks / InnoDB)', fontsize=12)
+            ax.set_title('TPC-C Speedup: MyRocks vs InnoDB', fontsize=14)
+            ax.legend(fontsize=11)
+            ax.grid(True, alpha=0.3)
+            ax.set_xscale('log', base=2)
+
+            plt.tight_layout()
+            plt.savefig(f"{output_dir}/tpcc_speedup.png", dpi=300)
+            plt.close()
+
+    # Plot latency if available
+    if 'latency_avg' in df.columns:
+        # Check if there's valid latency data (not all zeros)
+        if df['latency_avg'].sum() > 0:
+            # Plot Average Latency
+            fig, ax = plt.subplots(figsize=(12, 6))
+
+            for engine in df['engine'].unique():
+                engine_df = df[df['engine'] == engine]
+                label = engine_map.get(engine, engine.upper())
+                ax.plot(engine_df['threads'], engine_df['latency_avg'],
+                       marker='o', label=label, linewidth=2, markersize=8)
+
+            ax.set_xlabel('Threads', fontsize=12)
+            ax.set_ylabel('Average Latency (ms)', fontsize=12)
+            ax.set_title('TPC-C New-Order Average Latency Comparison', fontsize=14)
+            ax.legend(fontsize=11)
+            ax.grid(True, alpha=0.3)
+            ax.set_xscale('log', base=2)
+
+            plt.tight_layout()
+            plt.savefig(f"{output_dir}/tpcc_latency_avg.png", dpi=300)
+            plt.close()
+
+    if 'latency_95' in df.columns:
+        # Check if there's valid latency data (not all zeros)
+        if df['latency_95'].sum() > 0:
+            # Plot 95th Percentile Latency
+            fig, ax = plt.subplots(figsize=(12, 6))
+
+            for engine in df['engine'].unique():
+                engine_df = df[df['engine'] == engine]
+                label = engine_map.get(engine, engine.upper())
+                ax.plot(engine_df['threads'], engine_df['latency_95'],
+                       marker='o', label=label, linewidth=2, markersize=8)
+
+            ax.set_xlabel('Threads', fontsize=12)
+            ax.set_ylabel('95th Percentile Latency (ms)', fontsize=12)
+            ax.set_title('TPC-C New-Order 95th Percentile Latency Comparison', fontsize=14)
+            ax.legend(fontsize=11)
+            ax.grid(True, alpha=0.3)
+            ax.set_xscale('log', base=2)
+
+            plt.tight_layout()
+            plt.savefig(f"{output_dir}/tpcc_latency_95.png", dpi=300)
+            plt.close()
 
     print(f"Created TPC-C plots")
 

@@ -185,6 +185,37 @@ compare_tpcc() {
             }
         }' "${COMPARISON_DIR}/merged_results.csv"
 
+        echo ""
+        echo "==================== Latency (ms) Comparison ===================="
+        echo ""
+
+        # Check if latency columns exist (columns 7 and 8)
+        if head -1 "${COMPARISON_DIR}/merged_results.csv" | grep -q "latency_avg"; then
+            # Compare average latency
+            awk -F',' -v eng1="$engine1" -v eng2="$engine2" 'NR>1 {
+                key=$2
+                if ($1 == eng1) {
+                    engine1_lat[key] = $7
+                    engine1_95[key] = $8
+                } else if ($1 == eng2) {
+                    engine2_lat[key] = $7
+                    engine2_95[key] = $8
+                }
+            }
+            END {
+                printf "%-15s %12s %12s %12s %12s %12s\n", "Threads", eng1 " Avg", eng2 " Avg", eng1 " 95%", eng2 " 95%", "Reduction"
+                print "---------------------------------------------------------------------------------"
+                for (key in engine1_lat) {
+                    if (key in engine2_lat) {
+                        reduction = (engine1_lat[key] - engine2_lat[key]) / engine1_lat[key] * 100
+                        printf "%-15s %12.2f %12.2f %12.2f %12.2f %11.1f%%\n", key, engine1_lat[key], engine2_lat[key], engine1_95[key], engine2_95[key], reduction
+                    }
+                }
+            }' "${COMPARISON_DIR}/merged_results.csv"
+        else
+            echo "(Latency data not available - run benchmark again to collect latency)"
+        fi
+
     } | tee "${COMPARISON_DIR}/comparison_report.txt"
 }
 

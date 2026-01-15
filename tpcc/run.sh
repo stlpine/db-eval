@@ -196,13 +196,42 @@ run_benchmark() {
     # TPC-C output format:
     #   <TpmC>
     #                    50031.699 TpmC
+    # Latency from periodic output: "  10, trx: 7140, 95%: 14.752, 99%: 18.311, ..."
+    # Latency from Raw Results: "[0] sc:63200 lt:318400  rt:0  fl:0 avg_rt: 10.8 (5)"
     {
-        echo "engine,threads,warehouses,duration,tpmC,tpmTotal"
+        echo "engine,threads,warehouses,duration,tpmC,tpmTotal,latency_avg,latency_95"
         awk -v engine="$ENGINE" -v threads="$threads" -v warehouses="$TPCC_WAREHOUSES" -v duration="$TPCC_DURATION" '
         /TpmC$/ { tpmC = $1 }
+        # Extract 95th percentile from periodic output lines (format: "  10, trx: 7140, 95%: 14.752, ...")
+        /^[[:space:]]*[0-9]+, trx:/ {
+            # Find 95%: value
+            for (i = 1; i <= NF; i++) {
+                if ($i ~ /^95%:/) {
+                    val = $(i+1)
+                    gsub(/,/, "", val)
+                    sum_95 += val
+                    count_95++
+                }
+            }
+        }
+        # Extract avg_rt for New-Order [0] from Raw Results
+        /^\[0\] sc:.*avg_rt:/ {
+            for (i = 1; i <= NF; i++) {
+                if ($i == "avg_rt:") {
+                    avg_rt = $(i+1)
+                    gsub(/,/, "", avg_rt)
+                }
+            }
+        }
         END {
             if (tpmC == "") tpmC = 0
-            printf "%s,%s,%s,%s,%.2f,%.2f\n", engine, threads, warehouses, duration, tpmC, tpmC
+            if (avg_rt == "") avg_rt = 0
+            if (count_95 > 0) {
+                lat_95 = sum_95 / count_95
+            } else {
+                lat_95 = 0
+            }
+            printf "%s,%s,%s,%s,%.2f,%.2f,%.2f,%.2f\n", engine, threads, warehouses, duration, tpmC, tpmC, avg_rt, lat_95
         }
         ' "$result_file"
     } >> "$stats_file"
@@ -221,7 +250,7 @@ done
 # Consolidate results
 log_info "Consolidating results..."
 CONSOLIDATED_CSV="${RESULT_DIR}/consolidated_results.csv"
-echo "engine,threads,warehouses,duration,tpmC,tpmTotal" > "$CONSOLIDATED_CSV"
+echo "engine,threads,warehouses,duration,tpmC,tpmTotal,latency_avg,latency_95" > "$CONSOLIDATED_CSV"
 
 for stats_file in "${RESULT_DIR}"/tpcc_threads*_stats.csv; do
     if [ -f "$stats_file" ]; then

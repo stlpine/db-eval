@@ -32,3 +32,6 @@ Thumbs.db
 # Backup files
 *.bak
 *.backup
+
+# Image files
+*.png
