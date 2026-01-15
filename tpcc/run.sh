@@ -54,6 +54,68 @@ mkdir -p "$RESULT_DIR"
 log_info "Starting TPC-C benchmark for $ENGINE"
 log_info "Results will be saved to: $RESULT_DIR"
 
+# Log all configuration options
+CONFIG_LOG="${RESULT_DIR}/benchmark_config.log"
+log_info "Logging configuration to: $CONFIG_LOG"
+{
+    echo "============================================================"
+    echo "BENCHMARK CONFIGURATION LOG"
+    echo "Generated: $(date)"
+    echo "Engine: $ENGINE"
+    echo "============================================================"
+    echo ""
+
+    echo "============================================================"
+    echo "SYSTEM INFORMATION"
+    echo "============================================================"
+    echo "Hostname: $(hostname)"
+    echo "Kernel: $(uname -r)"
+    echo "OS: $(cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d= -f2 | tr -d '"')"
+    echo ""
+    echo "CPU Info:"
+    lscpu 2>/dev/null | grep -E "^(Model name|Socket|Core|Thread|CPU\(s\)|CPU MHz)" || cat /proc/cpuinfo | grep -E "^(model name|cpu cores|siblings)" | head -4
+    echo ""
+    echo "Memory Info:"
+    free -h 2>/dev/null || cat /proc/meminfo | head -3
+    echo ""
+    echo "Disk Info:"
+    df -h "$SSD_MOUNT" 2>/dev/null
+    echo ""
+
+    echo "============================================================"
+    echo "BENCHMARK PARAMETERS (env.sh)"
+    echo "============================================================"
+    echo "BENCHMARK_DB: $BENCHMARK_DB"
+    echo "BENCHMARK_THREADS: $BENCHMARK_THREADS"
+    echo "BENCHMARK_DURATION: $BENCHMARK_DURATION"
+    echo "TPCC_WAREHOUSES: $TPCC_WAREHOUSES"
+    echo "TPCC_DURATION: $TPCC_DURATION"
+    echo ""
+
+    echo "============================================================"
+    echo "MYSQL SERVER VARIABLES"
+    echo "============================================================"
+    mysql --socket="$SOCKET" -e "SHOW VARIABLES;" 2>/dev/null
+    echo ""
+
+    echo "============================================================"
+    echo "MYSQL GLOBAL STATUS (before benchmark)"
+    echo "============================================================"
+    mysql --socket="$SOCKET" -e "SHOW GLOBAL STATUS;" 2>/dev/null
+    echo ""
+
+    echo "============================================================"
+    echo "STORAGE ENGINE STATUS"
+    echo "============================================================"
+    if [ "$ENGINE" = "percona-myrocks" ]; then
+        mysql --socket="$SOCKET" -e "SHOW ENGINE ROCKSDB STATUS\G" 2>/dev/null
+    else
+        mysql --socket="$SOCKET" -e "SHOW ENGINE INNODB STATUS\G" 2>/dev/null
+    fi
+    echo ""
+
+} > "$CONFIG_LOG" 2>&1
+
 # Function to run a single benchmark
 run_benchmark() {
     local threads=$1
