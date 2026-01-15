@@ -24,7 +24,7 @@ export SSD_MOUNT="/mnt/nvme"
 
 # SSD Temperature Settings
 # Target temperature for cooldown before benchmarking (in Celsius)
-export SSD_TARGET_TEMP="40"
+export SSD_TARGET_TEMP="46"
 # Enable/disable automatic cooldown before benchmarks
 export SSD_COOLDOWN_ENABLED="true"
 
