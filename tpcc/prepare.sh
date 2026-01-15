@@ -44,18 +44,15 @@ fi
 
 TPCC_DIR="${SCRIPT_DIR}/tpcc-mysql"
 
-# Setup tpcc-mysql repository
+# Setup tpcc-mysql repository (only if not already present)
 PARENT_DIR="$(dirname "$SCRIPT_DIR")"
-if [ ! -d "$TPCC_DIR" ]; then
+if [ ! -f "$TPCC_DIR/src/load.c" ]; then
     log_info "Initializing tpcc-mysql submodule..."
     cd "$PARENT_DIR"
     git submodule update --init --recursive tpcc/tpcc-mysql
     cd - > /dev/null
 else
-    log_info "Updating tpcc-mysql submodule..."
-    cd "$PARENT_DIR"
-    git submodule update --remote tpcc/tpcc-mysql
-    cd - > /dev/null
+    log_info "tpcc-mysql submodule already exists, skipping update"
 fi
 
 # Build tpcc-mysql

@@ -41,18 +41,15 @@ fi
 
 SYSBENCH_TPCC_DIR="${SCRIPT_DIR}/sysbench-tpcc"
 
-# Setup sysbench-tpcc repository
+# Setup sysbench-tpcc repository (only if not already present)
 PARENT_DIR="$(dirname "$SCRIPT_DIR")"
-if [ ! -d "$SYSBENCH_TPCC_DIR" ]; then
+if [ ! -f "$SYSBENCH_TPCC_DIR/tpcc.lua" ]; then
     log_info "Initializing sysbench-tpcc submodule..."
     cd "$PARENT_DIR"
     git submodule update --init --recursive sysbench-tpcc/sysbench-tpcc
     cd - > /dev/null
 else
-    log_info "Updating sysbench-tpcc submodule..."
-    cd "$PARENT_DIR"
-    git submodule update --remote sysbench-tpcc/sysbench-tpcc
-    cd - > /dev/null
+    log_info "sysbench-tpcc submodule already exists, skipping update"
 fi
 
 # Check if tpcc.lua exists
