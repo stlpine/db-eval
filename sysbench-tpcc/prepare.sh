@@ -87,7 +87,10 @@ log_info "  Total warehouses: $(( SYSBENCH_TPCC_TABLES * SYSBENCH_TPCC_SCALE ))"
 
 log_info "This may take a while depending on the data size..."
 
-sysbench "$SYSBENCH_TPCC_DIR/tpcc.lua" \
+# Change to sysbench-tpcc directory so Lua can find tpcc_common.lua
+cd "$SYSBENCH_TPCC_DIR"
+
+sysbench ./tpcc.lua \
     --mysql-socket="$SOCKET" \
     --mysql-db="$BENCHMARK_DB" \
     --tables="$SYSBENCH_TPCC_TABLES" \
@@ -96,7 +99,10 @@ sysbench "$SYSBENCH_TPCC_DIR/tpcc.lua" \
     --db-driver=mysql \
     prepare
 
-if [ $? -ne 0 ]; then
+SYSBENCH_STATUS=$?
+cd - > /dev/null
+
+if [ $SYSBENCH_STATUS -ne 0 ]; then
     log_error "Failed to prepare TPC-C data"
     exit 1
 fi

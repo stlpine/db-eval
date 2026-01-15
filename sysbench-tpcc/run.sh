@@ -71,8 +71,8 @@ run_benchmark() {
     iostat -x 1 > "$iostat_file" 2>&1 &
     local iostat_pid=$!
 
-    # Run benchmark
-    sysbench "$SYSBENCH_TPCC_DIR/tpcc.lua" \
+    # Run benchmark (cd to sysbench-tpcc dir so Lua can find tpcc_common.lua)
+    (cd "$SYSBENCH_TPCC_DIR" && sysbench ./tpcc.lua \
         --mysql-socket="$SOCKET" \
         --mysql-db="$BENCHMARK_DB" \
         --threads="$threads" \
@@ -81,7 +81,7 @@ run_benchmark() {
         --time="$SYSBENCH_TPCC_DURATION" \
         --report-interval="$SYSBENCH_TPCC_REPORT_INTERVAL" \
         --db-driver=mysql \
-        run > "$result_file" 2>&1
+        run) > "$result_file" 2>&1
 
     local bench_exit_code=$?
 
