@@ -14,6 +14,7 @@ plugin-load-add = ha_rocksdb.so
 
 # Transaction and Collation Settings (recommended for MyRocks)
 transaction-isolation = READ-COMMITTED
+character-set-server = latin1
 collation-server = latin1_bin
 
 # Binary log (ROW format for realistic production settings)
