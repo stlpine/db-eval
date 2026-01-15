@@ -22,14 +22,6 @@ export SSD_DEVICE="$("${_ENV_DIR}/../../scripts/find_ssd.sh")"
 # SSD Mount Point - MODIFY THIS TO YOUR SSD MOUNT POINT
 export SSD_MOUNT="/mnt/nvme"
 
-# Alternative: Auto-detect mount point from device (uncomment to use)
-# if [ -n "$SSD_DEVICE" ]; then
-#     DETECTED_MOUNT=$(findmnt -n -o TARGET "$SSD_DEVICE" 2>/dev/null | head -1)
-#     if [ -n "$DETECTED_MOUNT" ]; then
-#         export SSD_MOUNT="$DETECTED_MOUNT"
-#     fi
-# fi
-
 # SSD Temperature Settings
 # Target temperature for cooldown before benchmarking (in Celsius)
 export SSD_TARGET_TEMP="40"
@@ -39,6 +31,10 @@ export SSD_COOLDOWN_ENABLED="true"
 # SSD Mount Wait Settings
 # Time to wait after mounting (in seconds) to allow filesystem to settle
 export SSD_MOUNT_WAIT="60"
+
+# Cgroup Configuration (for memory-limited benchmarking)
+export CGROUP_NAME="limited_memory_group"
+export CGROUP_MEMORY_LIMIT="16G"
 
 # MySQL Data Directories
 export MYSQL_DATADIR_VANILLA_INNODB="${SSD_MOUNT}/mysql-vanilla-innodb/data"
