@@ -84,7 +84,7 @@ compare_sysbench() {
         # Compare TPS for each workload and thread count
         awk -F',' 'NR>1 {
             key=$2"_"$3
-            if ($1 == "innodb") {
+            if ($1 ~ /innodb/) {
                 innodb[key] = $4
             } else {
                 myrocks[key] = $4
@@ -108,7 +108,7 @@ compare_sysbench() {
         # Compare latency
         awk -F',' 'NR>1 {
             key=$2"_"$3
-            if ($1 == "innodb") {
+            if ($1 ~ /innodb/) {
                 innodb_lat[key] = $6
             } else {
                 myrocks_lat[key] = $6
@@ -160,7 +160,7 @@ compare_tpcc() {
 
         awk -F',' 'NR>1 {
             key=$2
-            if ($1 == "innodb") {
+            if ($1 ~ /innodb/) {
                 innodb[key] = $5
             } else {
                 myrocks[key] = $5
