@@ -96,13 +96,11 @@ mysql --socket="$SOCKET" "$BENCHMARK_DB" < "${SCRIPT_DIR}/add_idx_only.sql"
 
 log_info "TPC-C tables created successfully"
 
-# Load data in parallel
-log_info "Loading TPC-C data with $TPCC_WAREHOUSES warehouses (parallel loading)..."
-log_info "This may take a while depending on warehouse count..."
+# Load data sequentially
+log_info "Loading TPC-C data with $TPCC_WAREHOUSES warehouses..."
+log_info "This may take a very long time..."
 
 START_TIME=$(date +%s)
-
-cd "$TPCC_DIR"
 
 # Set library path for MySQL libraries
 MYSQL_LIB_PATH=$(mysql_config --variable=pkglibdir 2>/dev/null)
@@ -110,99 +108,16 @@ if [ -n "$MYSQL_LIB_PATH" ]; then
     export LD_LIBRARY_PATH="${MYSQL_LIB_PATH}:${LD_LIBRARY_PATH}"
 fi
 
-# Create log directory for parallel load outputs
-LOAD_LOG_DIR="${SCRIPT_DIR}/load_logs_${ENGINE}"
-rm -rf "$LOAD_LOG_DIR"
-mkdir -p "$LOAD_LOG_DIR"
-
-# Parallel loading configuration
-STEP=100  # Number of warehouses per batch
-MAX_CONCURRENT_BATCHES=2  # Limit concurrent batches to avoid memory thrashing (6 processes total)
-
-# Load item table first (only needs to run once for all warehouses)
-# Wait for it to complete before starting warehouse loading to reduce contention
-log_info "Loading item table..."
-MYSQL_UNIX_PORT="$SOCKET" ./tpcc_load \
+MYSQL_UNIX_PORT="$SOCKET" "$TPCC_DIR/tpcc_load" \
     -h localhost \
     -d "$BENCHMARK_DB" \
     -u root \
     -p "" \
     -w "$TPCC_WAREHOUSES" \
-    -l 1 -m 1 -n "$TPCC_WAREHOUSES" \
-    > "$LOAD_LOG_DIR/load_item.log" 2>&1
-log_info "Item table loaded"
-
-# Load warehouse data in parallel batches
-# -l 2: warehouse, district, customer
-# -l 3: orders
-# -l 4: stock
-log_info "Loading warehouse data in parallel (batch size: $STEP, max concurrent batches: $MAX_CONCURRENT_BATCHES)..."
-
-x=1
-batch_count=0
-while [ $x -le $TPCC_WAREHOUSES ]; do
-    END_WH=$(( x + STEP - 1 ))
-    if [ $END_WH -gt $TPCC_WAREHOUSES ]; then
-        END_WH=$TPCC_WAREHOUSES
-    fi
-
-    log_info "  Starting loaders for warehouses $x to $END_WH..."
-
-    # Load warehouse/district/customer
-    MYSQL_UNIX_PORT="$SOCKET" ./tpcc_load \
-        -h localhost \
-        -d "$BENCHMARK_DB" \
-        -u root \
-        -p "" \
-        -w "$TPCC_WAREHOUSES" \
-        -l 2 -m $x -n $END_WH \
-        > "$LOAD_LOG_DIR/load_wdc_${x}.log" 2>&1 &
-
-    # Load orders
-    MYSQL_UNIX_PORT="$SOCKET" ./tpcc_load \
-        -h localhost \
-        -d "$BENCHMARK_DB" \
-        -u root \
-        -p "" \
-        -w "$TPCC_WAREHOUSES" \
-        -l 3 -m $x -n $END_WH \
-        > "$LOAD_LOG_DIR/load_orders_${x}.log" 2>&1 &
-
-    # Load stock
-    MYSQL_UNIX_PORT="$SOCKET" ./tpcc_load \
-        -h localhost \
-        -d "$BENCHMARK_DB" \
-        -u root \
-        -p "" \
-        -w "$TPCC_WAREHOUSES" \
-        -l 4 -m $x -n $END_WH \
-        > "$LOAD_LOG_DIR/load_stock_${x}.log" 2>&1 &
-
-    batch_count=$(( batch_count + 1 ))
-    x=$(( x + STEP ))
-
-    # Wait for current batches to complete before starting more
-    if [ $batch_count -ge $MAX_CONCURRENT_BATCHES ]; then
-        log_info "  Waiting for current $batch_count batches to complete..."
-        wait
-        batch_count=0
-    fi
-done
-
-# Wait for any remaining background processes
-if [ $batch_count -gt 0 ]; then
-    log_info "Waiting for final $batch_count batches to complete..."
-    wait
-fi
+    2>&1 | tee "${SCRIPT_DIR}/load_${ENGINE}.log"
 
 END_TIME=$(date +%s)
 DURATION=$((END_TIME - START_TIME))
-
-# Check for errors in load logs
-ERRORS=$(grep -l -i "error" "$LOAD_LOG_DIR"/*.log 2>/dev/null | wc -l)
-if [ "$ERRORS" -gt 0 ]; then
-    log_error "Errors detected in loading. Check logs in $LOAD_LOG_DIR"
-fi
 
 log_info "TPC-C data loading completed in $DURATION seconds ($((DURATION / 60)) minutes)"
 
