@@ -232,7 +232,7 @@ run_benchmark() {
             }
         }
         # Extract avg_rt for New-Order [0] from Raw Results
-        /^\[0\] sc:.*avg_rt:/ {
+        /^[[:space:]]*\[0\] sc:.*avg_rt:/ {
             for (i = 1; i <= NF; i++) {
                 if ($i == "avg_rt:") {
                     avg_rt = $(i+1)
