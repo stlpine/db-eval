@@ -81,6 +81,29 @@ log_info "Logging configuration to: $CONFIG_LOG"
     echo "Memory Info:"
     free -h 2>/dev/null || cat /proc/meminfo | head -3
     echo ""
+    echo "Cgroup Memory Limits:"
+    if [ -f /sys/fs/cgroup/memory.max ]; then
+        # cgroup v2 (process's own cgroup)
+        echo "  memory.max: $(cat /sys/fs/cgroup/memory.max 2>/dev/null)"
+        echo "  memory.current: $(cat /sys/fs/cgroup/memory.current 2>/dev/null)"
+    fi
+    if [ -f /sys/fs/cgroup/limited_memory_group/memory.max ]; then
+        # Named cgroup group
+        echo "  limited_memory_group/memory.max: $(cat /sys/fs/cgroup/limited_memory_group/memory.max 2>/dev/null)"
+        echo "  limited_memory_group/memory.current: $(cat /sys/fs/cgroup/limited_memory_group/memory.current 2>/dev/null)"
+    fi
+    # Check process's own cgroup
+    if [ -f /proc/self/cgroup ]; then
+        CGROUP_PATH=$(cat /proc/self/cgroup | grep -E "^0::" | cut -d: -f3)
+        if [ -n "$CGROUP_PATH" ] && [ "$CGROUP_PATH" != "/" ]; then
+            echo "  Process cgroup: $CGROUP_PATH"
+            if [ -f "/sys/fs/cgroup${CGROUP_PATH}/memory.max" ]; then
+                echo "  Process memory.max: $(cat /sys/fs/cgroup${CGROUP_PATH}/memory.max 2>/dev/null)"
+                echo "  Process memory.current: $(cat /sys/fs/cgroup${CGROUP_PATH}/memory.current 2>/dev/null)"
+            fi
+        fi
+    fi
+    echo ""
     echo "Disk Info:"
     df -h "$SSD_MOUNT" 2>/dev/null
     echo ""

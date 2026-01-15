@@ -66,12 +66,12 @@ export SYSBENCH_TABLES="10"
 export SYSBENCH_WORKLOADS="oltp_read_write oltp_read_only oltp_write_only"
 
 # TPC-C Configuration
-export TPCC_WAREHOUSES="100"
+export TPCC_WAREHOUSES="2000"
 export TPCC_DURATION="600"  # seconds
 
 # Sysbench-TPCC Configuration
 export SYSBENCH_TPCC_TABLES="10"          # Number of warehouse tables
-export SYSBENCH_TPCC_SCALE="100"          # Warehouses per table (total: tables × scale)
+export SYSBENCH_TPCC_SCALE="200"          # Warehouses per table (total: tables × scale = 2000)
 export SYSBENCH_TPCC_THREADS="1 4 16 64"  # Thread levels to test
 export SYSBENCH_TPCC_DURATION="600"       # Benchmark duration (10 minutes, matching tpcc-mysql)
 export SYSBENCH_TPCC_WARMUP="60"          # Warmup period in seconds
