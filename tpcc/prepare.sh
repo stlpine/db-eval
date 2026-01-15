@@ -117,8 +117,10 @@ mkdir -p "$LOAD_LOG_DIR"
 
 # Parallel loading configuration
 STEP=100  # Number of warehouses per batch
+MAX_CONCURRENT_BATCHES=2  # Limit concurrent batches to avoid memory thrashing (6 processes total)
 
 # Load item table first (only needs to run once for all warehouses)
+# Wait for it to complete before starting warehouse loading to reduce contention
 log_info "Loading item table..."
 MYSQL_UNIX_PORT="$SOCKET" ./tpcc_load \
     -h localhost \
@@ -127,15 +129,17 @@ MYSQL_UNIX_PORT="$SOCKET" ./tpcc_load \
     -p "" \
     -w "$TPCC_WAREHOUSES" \
     -l 1 -m 1 -n "$TPCC_WAREHOUSES" \
-    > "$LOAD_LOG_DIR/load_item.log" 2>&1 &
+    > "$LOAD_LOG_DIR/load_item.log" 2>&1
+log_info "Item table loaded"
 
 # Load warehouse data in parallel batches
 # -l 2: warehouse, district, customer
 # -l 3: orders
 # -l 4: stock
-log_info "Loading warehouse data in parallel (batch size: $STEP)..."
+log_info "Loading warehouse data in parallel (batch size: $STEP, max concurrent batches: $MAX_CONCURRENT_BATCHES)..."
 
 x=1
+batch_count=0
 while [ $x -le $TPCC_WAREHOUSES ]; do
     END_WH=$(( x + STEP - 1 ))
     if [ $END_WH -gt $TPCC_WAREHOUSES ]; then
@@ -174,12 +178,22 @@ while [ $x -le $TPCC_WAREHOUSES ]; do
         -l 4 -m $x -n $END_WH \
         > "$LOAD_LOG_DIR/load_stock_${x}.log" 2>&1 &
 
+    batch_count=$(( batch_count + 1 ))
     x=$(( x + STEP ))
+
+    # Wait for current batches to complete before starting more
+    if [ $batch_count -ge $MAX_CONCURRENT_BATCHES ]; then
+        log_info "  Waiting for current $batch_count batches to complete..."
+        wait
+        batch_count=0
+    fi
 done
 
-# Wait for all background loading processes to complete
-log_info "Waiting for all parallel loaders to complete..."
-wait
+# Wait for any remaining background processes
+if [ $batch_count -gt 0 ]; then
+    log_info "Waiting for final $batch_count batches to complete..."
+    wait
+fi
 
 END_TIME=$(date +%s)
 DURATION=$((END_TIME - START_TIME))
