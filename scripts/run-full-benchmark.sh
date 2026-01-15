@@ -13,7 +13,11 @@ usage() {
 Usage: $0 [options]
 
 Options:
-    -b, --benchmark <type>    Benchmark type: sysbench, tpcc, sysbench-tpcc, or all (default: all)
+    -b, --benchmark <type>    Benchmark type (comma-separated or 'all'):
+                              - sysbench
+                              - tpcc
+                              - sysbench-tpcc
+                              - all (default)
     -e, --engine <engine>     Engine to test (default: vanilla-innodb):
                               - vanilla-innodb  : Vanilla MySQL with InnoDB
                               - percona-innodb  : Percona Server with InnoDB
@@ -27,6 +31,7 @@ Examples:
     $0 -e percona-innodb                        # Run all benchmarks for Percona Server InnoDB
     $0 -e percona-myrocks                       # Run all benchmarks for Percona Server MyRocks
     $0 -b sysbench -e vanilla-innodb            # Run only sysbench for vanilla MySQL InnoDB
+    $0 -b tpcc,sysbench-tpcc -e vanilla-innodb  # Run tpcc and sysbench-tpcc (skip sysbench)
     $0 -b sysbench-tpcc -e percona-myrocks      # Run only sysbench-tpcc for Percona MyRocks
     $0 -e percona-myrocks -s                    # Run all benchmarks, skip data preparation
 
@@ -82,21 +87,45 @@ case $ENGINE in
 esac
 
 # Determine which benchmarks to run
-case $BENCHMARK in
-    sysbench|tpcc|sysbench-tpcc|all)
-        ;;
-    *)
-        log_error "Invalid benchmark: $BENCHMARK"
-        usage
-        ;;
-esac
+RUN_SYSBENCH=false
+RUN_TPCC=false
+RUN_SYSBENCH_TPCC=false
+
+if [ "$BENCHMARK" = "all" ]; then
+    RUN_SYSBENCH=true
+    RUN_TPCC=true
+    RUN_SYSBENCH_TPCC=true
+else
+    # Parse comma-separated benchmark list
+    IFS=',' read -ra BENCH_ARRAY <<< "$BENCHMARK"
+    for bench in "${BENCH_ARRAY[@]}"; do
+        case $bench in
+            sysbench)
+                RUN_SYSBENCH=true
+                ;;
+            tpcc)
+                RUN_TPCC=true
+                ;;
+            sysbench-tpcc)
+                RUN_SYSBENCH_TPCC=true
+                ;;
+            *)
+                log_error "Invalid benchmark: $bench"
+                usage
+                ;;
+        esac
+    done
+fi
 
 log_info "=========================================="
 log_info "Full Benchmark Runner"
 log_info "=========================================="
-log_info "Benchmark: $BENCHMARK"
 log_info "Engine: $ENGINE"
 log_info "Skip Prepare: $SKIP_PREPARE"
+log_info "Benchmarks to run:"
+[ "$RUN_SYSBENCH" = true ] && log_info "  - sysbench"
+[ "$RUN_TPCC" = true ] && log_info "  - tpcc"
+[ "$RUN_SYSBENCH_TPCC" = true ] && log_info "  - sysbench-tpcc"
 log_info "=========================================="
 log_info ""
 
@@ -274,15 +303,15 @@ sudo "${SCRIPT_DIR}/setup-ssd.sh" reset --force || {
 log_info "SSD is ready for benchmarking"
 log_info ""
 
-if [ "$BENCHMARK" = "sysbench" ] || [ "$BENCHMARK" = "all" ]; then
+if [ "$RUN_SYSBENCH" = true ]; then
     run_sysbench "$ENGINE"
 fi
 
-if [ "$BENCHMARK" = "tpcc" ] || [ "$BENCHMARK" = "all" ]; then
+if [ "$RUN_TPCC" = true ]; then
     run_tpcc "$ENGINE"
 fi
 
-if [ "$BENCHMARK" = "sysbench-tpcc" ] || [ "$BENCHMARK" = "all" ]; then
+if [ "$RUN_SYSBENCH_TPCC" = true ]; then
     run_sysbench_tpcc "$ENGINE"
 fi
 
