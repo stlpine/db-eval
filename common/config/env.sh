@@ -76,6 +76,8 @@ export SYSBENCH_TPCC_THREADS="1 4 16 64"  # Thread levels to test
 export SYSBENCH_TPCC_DURATION="600"       # Benchmark duration (10 minutes, matching tpcc-mysql)
 export SYSBENCH_TPCC_WARMUP="60"          # Warmup period in seconds
 export SYSBENCH_TPCC_REPORT_INTERVAL="10" # Report interval in seconds
+export SYSBENCH_TPCC_USE_FK="0"           # Disable foreign keys for fair MyRocks comparison
+# Note: transaction-isolation and collation are set in my-*.cnf server configs
 
 # Results Directory
 export RESULTS_DIR="$(dirname $(dirname $(dirname $(readlink -f "${BASH_SOURCE[0]}"))))/results"

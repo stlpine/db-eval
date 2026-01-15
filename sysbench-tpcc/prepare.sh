@@ -96,6 +96,7 @@ sysbench ./tpcc.lua \
     --tables="$SYSBENCH_TPCC_TABLES" \
     --scale="$SYSBENCH_TPCC_SCALE" \
     --threads="$SYSBENCH_TPCC_TABLES" \
+    --use_fk="$SYSBENCH_TPCC_USE_FK" \
     --db-driver=mysql \
     prepare
 

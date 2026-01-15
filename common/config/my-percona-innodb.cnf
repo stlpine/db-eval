@@ -9,8 +9,13 @@ datadir = /mnt/nvme/mysql-percona-innodb/data
 # Storage Engine
 default-storage-engine = InnoDB
 
-# Disable logging for benchmarking (standard practice)
-skip-log-bin
+# Transaction Isolation (READ-COMMITTED for benchmark consistency)
+transaction-isolation = READ-COMMITTED
+
+# Binary log (ROW format for realistic production settings)
+binlog_format = ROW
+
+# Disable query logging for benchmarking
 slow_query_log = 0
 general_log = 0
 

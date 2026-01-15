@@ -12,8 +12,14 @@ default-storage-engine = ROCKSDB
 # Load RocksDB Plugin
 plugin-load-add = ha_rocksdb.so
 
-# Disable logging for benchmarking (standard practice)
-skip-log-bin
+# Transaction and Collation Settings (recommended for MyRocks)
+transaction-isolation = READ-COMMITTED
+collation-server = latin1_bin
+
+# Binary log (ROW format for realistic production settings)
+binlog_format = ROW
+
+# Disable query logging for benchmarking
 slow_query_log = 0
 general_log = 0
 
