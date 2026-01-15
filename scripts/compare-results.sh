@@ -60,6 +60,10 @@ compare_sysbench() {
         exit 1
     fi
 
+    # Extract engine names from CSV files
+    local engine1=$(awk -F',' 'NR==2 {print $1}' "$innodb_csv")
+    local engine2=$(awk -F',' 'NR==2 {print $1}' "$myrocks_csv")
+
     # Merge results
     {
         head -n 1 "$innodb_csv"
@@ -71,32 +75,32 @@ compare_sysbench() {
     {
         echo "=========================================="
         echo "Sysbench Performance Comparison"
-        echo "InnoDB vs MyRocks"
+        echo "$engine1 vs $engine2"
         echo "Date: $(date)"
         echo "=========================================="
         echo ""
-        echo "InnoDB Results: $INNODB_DIR"
-        echo "MyRocks Results: $MYROCKS_DIR"
+        echo "Engine 1 ($engine1): $INNODB_DIR"
+        echo "Engine 2 ($engine2): $MYROCKS_DIR"
         echo ""
         echo "==================== Throughput (TPS) Comparison ===================="
         echo ""
 
         # Compare TPS for each workload and thread count
-        awk -F',' 'NR>1 {
+        awk -F',' -v eng1="$engine1" -v eng2="$engine2" 'NR>1 {
             key=$2"_"$3
-            if ($1 ~ /innodb/) {
-                innodb[key] = $4
-            } else {
-                myrocks[key] = $4
+            if ($1 == eng1) {
+                engine1[key] = $4
+            } else if ($1 == eng2) {
+                engine2[key] = $4
             }
         }
         END {
-            printf "%-30s %15s %15s %15s\n", "Workload_Threads", "InnoDB TPS", "MyRocks TPS", "Speedup"
+            printf "%-30s %15s %15s %15s\n", "Workload_Threads", eng1 " TPS", eng2 " TPS", "Speedup"
             print "--------------------------------------------------------------------------"
-            for (key in innodb) {
-                if (key in myrocks) {
-                    speedup = myrocks[key] / innodb[key]
-                    printf "%-30s %15.2f %15.2f %15.2fx\n", key, innodb[key], myrocks[key], speedup
+            for (key in engine1) {
+                if (key in engine2) {
+                    speedup = engine2[key] / engine1[key]
+                    printf "%-30s %15.2f %15.2f %15.2fx\n", key, engine1[key], engine2[key], speedup
                 }
             }
         }' "${COMPARISON_DIR}/merged_results.csv"
@@ -106,21 +110,21 @@ compare_sysbench() {
         echo ""
 
         # Compare latency
-        awk -F',' 'NR>1 {
+        awk -F',' -v eng1="$engine1" -v eng2="$engine2" 'NR>1 {
             key=$2"_"$3
-            if ($1 ~ /innodb/) {
-                innodb_lat[key] = $6
-            } else {
-                myrocks_lat[key] = $6
+            if ($1 == eng1) {
+                engine1_lat[key] = $6
+            } else if ($1 == eng2) {
+                engine2_lat[key] = $6
             }
         }
         END {
-            printf "%-30s %15s %15s %15s\n", "Workload_Threads", "InnoDB Lat", "MyRocks Lat", "Reduction"
+            printf "%-30s %15s %15s %15s\n", "Workload_Threads", eng1 " Lat", eng2 " Lat", "Reduction"
             print "--------------------------------------------------------------------------"
-            for (key in innodb_lat) {
-                if (key in myrocks_lat) {
-                    reduction = (innodb_lat[key] - myrocks_lat[key]) / innodb_lat[key] * 100
-                    printf "%-30s %15.2f %15.2f %14.1f%%\n", key, innodb_lat[key], myrocks_lat[key], reduction
+            for (key in engine1_lat) {
+                if (key in engine2_lat) {
+                    reduction = (engine1_lat[key] - engine2_lat[key]) / engine1_lat[key] * 100
+                    printf "%-30s %15.2f %15.2f %14.1f%%\n", key, engine1_lat[key], engine2_lat[key], reduction
                 }
             }
         }' "${COMPARISON_DIR}/merged_results.csv"
@@ -137,6 +141,10 @@ compare_tpcc() {
         exit 1
     fi
 
+    # Extract engine names from CSV files
+    local engine1=$(awk -F',' 'NR==2 {print $1}' "$innodb_csv")
+    local engine2=$(awk -F',' 'NR==2 {print $1}' "$myrocks_csv")
+
     # Merge results
     {
         head -n 1 "$innodb_csv"
@@ -148,31 +156,31 @@ compare_tpcc() {
     {
         echo "=========================================="
         echo "TPC-C Performance Comparison"
-        echo "InnoDB vs MyRocks"
+        echo "$engine1 vs $engine2"
         echo "Date: $(date)"
         echo "=========================================="
         echo ""
-        echo "InnoDB Results: $INNODB_DIR"
-        echo "MyRocks Results: $MYROCKS_DIR"
+        echo "Engine 1 ($engine1): $INNODB_DIR"
+        echo "Engine 2 ($engine2): $MYROCKS_DIR"
         echo ""
         echo "==================== TpmC Comparison ===================="
         echo ""
 
-        awk -F',' 'NR>1 {
+        awk -F',' -v eng1="$engine1" -v eng2="$engine2" 'NR>1 {
             key=$2
-            if ($1 ~ /innodb/) {
-                innodb[key] = $5
-            } else {
-                myrocks[key] = $5
+            if ($1 == eng1) {
+                engine1[key] = $5
+            } else if ($1 == eng2) {
+                engine2[key] = $5
             }
         }
         END {
-            printf "%-15s %15s %15s %15s\n", "Threads", "InnoDB TpmC", "MyRocks TpmC", "Speedup"
+            printf "%-15s %15s %15s %15s\n", "Threads", eng1 " TpmC", eng2 " TpmC", "Speedup"
             print "-------------------------------------------------------------"
-            for (key in innodb) {
-                if (key in myrocks) {
-                    speedup = myrocks[key] / innodb[key]
-                    printf "%-15s %15.2f %15.2f %15.2fx\n", key, innodb[key], myrocks[key], speedup
+            for (key in engine1) {
+                if (key in engine2) {
+                    speedup = engine2[key] / engine1[key]
+                    printf "%-15s %15.2f %15.2f %15.2fx\n", key, engine1[key], engine2[key], speedup
                 }
             }
         }' "${COMPARISON_DIR}/merged_results.csv"
@@ -189,6 +197,10 @@ compare_sysbench_tpcc() {
         exit 1
     fi
 
+    # Extract engine names from CSV files
+    local engine1=$(awk -F',' 'NR==2 {print $1}' "$innodb_csv")
+    local engine2=$(awk -F',' 'NR==2 {print $1}' "$myrocks_csv")
+
     # Merge results
     {
         head -n 1 "$innodb_csv"
@@ -200,32 +212,32 @@ compare_sysbench_tpcc() {
     {
         echo "=========================================="
         echo "Sysbench-TPCC Performance Comparison"
-        echo "InnoDB vs MyRocks"
+        echo "$engine1 vs $engine2"
         echo "Date: $(date)"
         echo "=========================================="
         echo ""
-        echo "InnoDB Results: $INNODB_DIR"
-        echo "MyRocks Results: $MYROCKS_DIR"
+        echo "Engine 1 ($engine1): $INNODB_DIR"
+        echo "Engine 2 ($engine2): $MYROCKS_DIR"
         echo ""
         echo "==================== TpmC Comparison ===================="
         echo ""
 
         # Compare TpmC (TPC-C metric)
-        awk -F',' 'NR>1 {
+        awk -F',' -v eng1="$engine1" -v eng2="$engine2" 'NR>1 {
             key=$2
-            if ($1 ~ /innodb/) {
-                innodb[key] = $12
-            } else {
-                myrocks[key] = $12
+            if ($1 == eng1) {
+                engine1[key] = $12
+            } else if ($1 == eng2) {
+                engine2[key] = $12
             }
         }
         END {
-            printf "%-15s %15s %15s %15s\n", "Threads", "InnoDB TpmC", "MyRocks TpmC", "Speedup"
+            printf "%-15s %15s %15s %15s\n", "Threads", eng1 " TpmC", eng2 " TpmC", "Speedup"
             print "-------------------------------------------------------------"
-            for (key in innodb) {
-                if (key in myrocks) {
-                    speedup = myrocks[key] / innodb[key]
-                    printf "%-15s %15.2f %15.2f %15.2fx\n", key, innodb[key], myrocks[key], speedup
+            for (key in engine1) {
+                if (key in engine2) {
+                    speedup = engine2[key] / engine1[key]
+                    printf "%-15s %15.2f %15.2f %15.2fx\n", key, engine1[key], engine2[key], speedup
                 }
             }
         }' "${COMPARISON_DIR}/merged_results.csv"
@@ -235,21 +247,21 @@ compare_sysbench_tpcc() {
         echo ""
 
         # Compare TPS (sysbench metric)
-        awk -F',' 'NR>1 {
+        awk -F',' -v eng1="$engine1" -v eng2="$engine2" 'NR>1 {
             key=$2
-            if ($1 ~ /innodb/) {
-                innodb[key] = $7
-            } else {
-                myrocks[key] = $7
+            if ($1 == eng1) {
+                engine1[key] = $7
+            } else if ($1 == eng2) {
+                engine2[key] = $7
             }
         }
         END {
-            printf "%-15s %15s %15s %15s\n", "Threads", "InnoDB TPS", "MyRocks TPS", "Speedup"
+            printf "%-15s %15s %15s %15s\n", "Threads", eng1 " TPS", eng2 " TPS", "Speedup"
             print "-------------------------------------------------------------"
-            for (key in innodb) {
-                if (key in myrocks) {
-                    speedup = myrocks[key] / innodb[key]
-                    printf "%-15s %15.2f %15.2f %15.2fx\n", key, innodb[key], myrocks[key], speedup
+            for (key in engine1) {
+                if (key in engine2) {
+                    speedup = engine2[key] / engine1[key]
+                    printf "%-15s %15.2f %15.2f %15.2fx\n", key, engine1[key], engine2[key], speedup
                 }
             }
         }' "${COMPARISON_DIR}/merged_results.csv"
@@ -259,21 +271,21 @@ compare_sysbench_tpcc() {
         echo ""
 
         # Compare average latency
-        awk -F',' 'NR>1 {
+        awk -F',' -v eng1="$engine1" -v eng2="$engine2" 'NR>1 {
             key=$2
-            if ($1 ~ /innodb/) {
-                innodb_lat[key] = $9
-            } else {
-                myrocks_lat[key] = $9
+            if ($1 == eng1) {
+                engine1_lat[key] = $9
+            } else if ($1 == eng2) {
+                engine2_lat[key] = $9
             }
         }
         END {
-            printf "%-15s %15s %15s %15s\n", "Threads", "InnoDB Lat", "MyRocks Lat", "Reduction"
+            printf "%-15s %15s %15s %15s\n", "Threads", eng1 " Lat", eng2 " Lat", "Reduction"
             print "-------------------------------------------------------------"
-            for (key in innodb_lat) {
-                if (key in myrocks_lat) {
-                    reduction = (innodb_lat[key] - myrocks_lat[key]) / innodb_lat[key] * 100
-                    printf "%-15s %15.2f %15.2f %14.1f%%\n", key, innodb_lat[key], myrocks_lat[key], reduction
+            for (key in engine1_lat) {
+                if (key in engine2_lat) {
+                    reduction = (engine1_lat[key] - engine2_lat[key]) / engine1_lat[key] * 100
+                    printf "%-15s %15.2f %15.2f %14.1f%%\n", key, engine1_lat[key], engine2_lat[key], reduction
                 }
             }
         }' "${COMPARISON_DIR}/merged_results.csv"
