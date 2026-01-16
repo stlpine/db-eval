@@ -255,6 +255,27 @@ for stats_file in "${RESULT_DIR}"/*_stats.csv; do
     fi
 done
 
+# Log engine status after benchmark
+log_info "Logging post-benchmark engine status..."
+{
+    echo ""
+    echo "============================================================"
+    echo "MYSQL GLOBAL STATUS (after benchmark)"
+    echo "============================================================"
+    mysql --socket="$SOCKET" -e "SHOW GLOBAL STATUS;" 2>/dev/null
+    echo ""
+
+    echo "============================================================"
+    echo "STORAGE ENGINE STATUS (after benchmark)"
+    echo "============================================================"
+    if [ "$ENGINE" = "percona-myrocks" ]; then
+        mysql --socket="$SOCKET" -e "SHOW ENGINE ROCKSDB STATUS\G" 2>/dev/null
+    else
+        mysql --socket="$SOCKET" -e "SHOW ENGINE INNODB STATUS\G" 2>/dev/null
+    fi
+    echo ""
+} >> "$CONFIG_LOG" 2>&1
+
 log_info "Benchmark completed successfully!"
 log_info "Results saved to: $RESULT_DIR"
 log_info "Consolidated results: $CONSOLIDATED_CSV"
