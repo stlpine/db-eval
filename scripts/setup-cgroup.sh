@@ -27,4 +27,4 @@ echo "  memory.current: $(sudo cat ${CGROUP_PATH}/memory.current)"
 
 echo ""
 log_info "To run benchmarks with memory limit, use:"
-echo "  ./scripts/run-benchmark-cgroup.sh [options]"
+echo "  ./scripts/run-cgroup.sh [options]"

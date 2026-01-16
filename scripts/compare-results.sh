@@ -79,14 +79,14 @@ compare_sysbench() {
         echo "Date: $(date)"
         echo "=========================================="
         echo ""
-        echo "Engine 1 ($engine1): $INNODB_DIR"
-        echo "Engine 2 ($engine2): $MYROCKS_DIR"
+        echo "[1] $engine1: $INNODB_DIR"
+        echo "[2] $engine2: $MYROCKS_DIR"
         echo ""
         echo "==================== Throughput (TPS) Comparison ===================="
         echo ""
 
         # Compare TPS for each workload and thread count
-        awk -F',' -v eng1="$engine1" -v eng2="$engine2" 'NR>1 {
+        tps_data=$(awk -F',' -v eng1="$engine1" -v eng2="$engine2" 'NR>1 {
             key=$2"_"$3
             if ($1 == eng1) {
                 engine1[key] = $4
@@ -95,22 +95,23 @@ compare_sysbench() {
             }
         }
         END {
-            printf "%-30s %15s %15s %15s\n", "Workload_Threads", eng1 " TPS", eng2 " TPS", "Speedup"
-            print "--------------------------------------------------------------------------"
             for (key in engine1) {
-                if (key in engine2) {
+                if (key in engine2 && engine1[key] > 0) {
                     speedup = engine2[key] / engine1[key]
-                    printf "%-30s %15.2f %15.2f %15.2fx\n", key, engine1[key], engine2[key], speedup
+                    printf "%-30s %12.2f %12.2f %9.2fx\n", key, engine1[key], engine2[key], speedup
                 }
             }
-        }' "${COMPARISON_DIR}/merged_results.csv"
+        }' "${COMPARISON_DIR}/merged_results.csv" | sort -t_ -k1,1 -k2,2n)
+        printf "%-30s %12s %12s %10s\n" "Workload_Threads" "TPS [1]" "TPS [2]" "Speedup"
+        echo "-------------------------------------------------------------------"
+        echo "$tps_data"
 
         echo ""
         echo "==================== Latency (ms) Comparison ===================="
         echo ""
 
         # Compare latency
-        awk -F',' -v eng1="$engine1" -v eng2="$engine2" 'NR>1 {
+        latency_data=$(awk -F',' -v eng1="$engine1" -v eng2="$engine2" 'NR>1 {
             key=$2"_"$3
             if ($1 == eng1) {
                 engine1_lat[key] = $6
@@ -119,15 +120,16 @@ compare_sysbench() {
             }
         }
         END {
-            printf "%-30s %15s %15s %15s\n", "Workload_Threads", eng1 " Lat", eng2 " Lat", "Reduction"
-            print "--------------------------------------------------------------------------"
             for (key in engine1_lat) {
-                if (key in engine2_lat) {
+                if (key in engine2_lat && engine1_lat[key] > 0) {
                     reduction = (engine1_lat[key] - engine2_lat[key]) / engine1_lat[key] * 100
-                    printf "%-30s %15.2f %15.2f %14.1f%%\n", key, engine1_lat[key], engine2_lat[key], reduction
+                    printf "%-30s %12.2f %12.2f %11.1f%%\n", key, engine1_lat[key], engine2_lat[key], reduction
                 }
             }
-        }' "${COMPARISON_DIR}/merged_results.csv"
+        }' "${COMPARISON_DIR}/merged_results.csv" | sort -t_ -k1,1 -k2,2n)
+        printf "%-30s %12s %12s %12s\n" "Workload_Threads" "Lat [1]" "Lat [2]" "Reduction"
+        echo "---------------------------------------------------------------------"
+        echo "$latency_data"
 
     } | tee "${COMPARISON_DIR}/comparison_report.txt"
 }
@@ -160,13 +162,13 @@ compare_tpcc() {
         echo "Date: $(date)"
         echo "=========================================="
         echo ""
-        echo "Engine 1 ($engine1): $INNODB_DIR"
-        echo "Engine 2 ($engine2): $MYROCKS_DIR"
+        echo "[1] $engine1: $INNODB_DIR"
+        echo "[2] $engine2: $MYROCKS_DIR"
         echo ""
         echo "==================== TpmC Comparison ===================="
         echo ""
 
-        awk -F',' -v eng1="$engine1" -v eng2="$engine2" 'NR>1 {
+        tpmc_data=$(awk -F',' -v eng1="$engine1" -v eng2="$engine2" 'NR>1 {
             key=$2
             if ($1 == eng1) {
                 engine1[key] = $5
@@ -175,15 +177,16 @@ compare_tpcc() {
             }
         }
         END {
-            printf "%-15s %15s %15s %15s\n", "Threads", eng1 " TpmC", eng2 " TpmC", "Speedup"
-            print "-------------------------------------------------------------"
             for (key in engine1) {
-                if (key in engine2) {
+                if (key in engine2 && engine1[key] > 0) {
                     speedup = engine2[key] / engine1[key]
-                    printf "%-15s %15.2f %15.2f %15.2fx\n", key, engine1[key], engine2[key], speedup
+                    printf "%-10s %20.2f %20.2f %9.2fx\n", key, engine1[key], engine2[key], speedup
                 }
             }
-        }' "${COMPARISON_DIR}/merged_results.csv"
+        }' "${COMPARISON_DIR}/merged_results.csv" | sort -n)
+        printf "%-10s %20s %20s %10s\n" "Threads" "$engine1" "$engine2" "Speedup"
+        echo "---------------------------------------------------------------"
+        echo "$tpmc_data"
 
         echo ""
         echo "==================== Latency (ms) Comparison ===================="
@@ -192,7 +195,7 @@ compare_tpcc() {
         # Check if latency columns exist (columns 7 and 8)
         if head -1 "${COMPARISON_DIR}/merged_results.csv" | grep -q "latency_avg"; then
             # Compare average latency
-            awk -F',' -v eng1="$engine1" -v eng2="$engine2" 'NR>1 {
+            latency_data=$(awk -F',' -v eng1="$engine1" -v eng2="$engine2" 'NR>1 {
                 key=$2
                 if ($1 == eng1) {
                     engine1_lat[key] = $7
@@ -203,15 +206,16 @@ compare_tpcc() {
                 }
             }
             END {
-                printf "%-15s %12s %12s %12s %12s %12s\n", "Threads", eng1 " Avg", eng2 " Avg", eng1 " 95%", eng2 " 95%", "Reduction"
-                print "---------------------------------------------------------------------------------"
                 for (key in engine1_lat) {
-                    if (key in engine2_lat) {
+                    if (key in engine2_lat && engine1_lat[key] > 0) {
                         reduction = (engine1_lat[key] - engine2_lat[key]) / engine1_lat[key] * 100
-                        printf "%-15s %12.2f %12.2f %12.2f %12.2f %11.1f%%\n", key, engine1_lat[key], engine2_lat[key], engine1_95[key], engine2_95[key], reduction
+                        printf "%-10s %12.2f %12.2f %12.2f %12.2f %11.1f%%\n", key, engine1_lat[key], engine2_lat[key], engine1_95[key], engine2_95[key], reduction
                     }
                 }
-            }' "${COMPARISON_DIR}/merged_results.csv"
+            }' "${COMPARISON_DIR}/merged_results.csv" | sort -n)
+            printf "%-10s %12s %12s %12s %12s %12s\n" "Threads" "Avg [1]" "Avg [2]" "95% [1]" "95% [2]" "Reduction"
+            echo "---------------------------------------------------------------------------"
+            echo "$latency_data"
         else
             echo "(Latency data not available - run benchmark again to collect latency)"
         fi
@@ -247,14 +251,14 @@ compare_sysbench_tpcc() {
         echo "Date: $(date)"
         echo "=========================================="
         echo ""
-        echo "Engine 1 ($engine1): $INNODB_DIR"
-        echo "Engine 2 ($engine2): $MYROCKS_DIR"
+        echo "[1] $engine1: $INNODB_DIR"
+        echo "[2] $engine2: $MYROCKS_DIR"
         echo ""
         echo "==================== TpmC Comparison ===================="
         echo ""
 
         # Compare TpmC (TPC-C metric)
-        awk -F',' -v eng1="$engine1" -v eng2="$engine2" 'NR>1 {
+        tpmc_data=$(awk -F',' -v eng1="$engine1" -v eng2="$engine2" 'NR>1 {
             key=$2
             if ($1 == eng1) {
                 engine1[key] = $12
@@ -263,22 +267,23 @@ compare_sysbench_tpcc() {
             }
         }
         END {
-            printf "%-15s %15s %15s %15s\n", "Threads", eng1 " TpmC", eng2 " TpmC", "Speedup"
-            print "-------------------------------------------------------------"
             for (key in engine1) {
-                if (key in engine2) {
+                if (key in engine2 && engine1[key] > 0) {
                     speedup = engine2[key] / engine1[key]
-                    printf "%-15s %15.2f %15.2f %15.2fx\n", key, engine1[key], engine2[key], speedup
+                    printf "%-10s %15.2f %15.2f %9.2fx\n", key, engine1[key], engine2[key], speedup
                 }
             }
-        }' "${COMPARISON_DIR}/merged_results.csv"
+        }' "${COMPARISON_DIR}/merged_results.csv" | sort -n)
+        printf "%-10s %15s %15s %10s\n" "Threads" "TpmC [1]" "TpmC [2]" "Speedup"
+        echo "-----------------------------------------------------"
+        echo "$tpmc_data"
 
         echo ""
         echo "==================== TPS Comparison ===================="
         echo ""
 
         # Compare TPS (sysbench metric)
-        awk -F',' -v eng1="$engine1" -v eng2="$engine2" 'NR>1 {
+        tps_data=$(awk -F',' -v eng1="$engine1" -v eng2="$engine2" 'NR>1 {
             key=$2
             if ($1 == eng1) {
                 engine1[key] = $7
@@ -287,22 +292,23 @@ compare_sysbench_tpcc() {
             }
         }
         END {
-            printf "%-15s %15s %15s %15s\n", "Threads", eng1 " TPS", eng2 " TPS", "Speedup"
-            print "-------------------------------------------------------------"
             for (key in engine1) {
-                if (key in engine2) {
+                if (key in engine2 && engine1[key] > 0) {
                     speedup = engine2[key] / engine1[key]
-                    printf "%-15s %15.2f %15.2f %15.2fx\n", key, engine1[key], engine2[key], speedup
+                    printf "%-10s %15.2f %15.2f %9.2fx\n", key, engine1[key], engine2[key], speedup
                 }
             }
-        }' "${COMPARISON_DIR}/merged_results.csv"
+        }' "${COMPARISON_DIR}/merged_results.csv" | sort -n)
+        printf "%-10s %15s %15s %10s\n" "Threads" "TPS [1]" "TPS [2]" "Speedup"
+        echo "-----------------------------------------------------"
+        echo "$tps_data"
 
         echo ""
         echo "==================== Latency (ms) Comparison ===================="
         echo ""
 
         # Compare average latency
-        awk -F',' -v eng1="$engine1" -v eng2="$engine2" 'NR>1 {
+        latency_data=$(awk -F',' -v eng1="$engine1" -v eng2="$engine2" 'NR>1 {
             key=$2
             if ($1 == eng1) {
                 engine1_lat[key] = $9
@@ -311,15 +317,16 @@ compare_sysbench_tpcc() {
             }
         }
         END {
-            printf "%-15s %15s %15s %15s\n", "Threads", eng1 " Lat", eng2 " Lat", "Reduction"
-            print "-------------------------------------------------------------"
             for (key in engine1_lat) {
-                if (key in engine2_lat) {
+                if (key in engine2_lat && engine1_lat[key] > 0) {
                     reduction = (engine1_lat[key] - engine2_lat[key]) / engine1_lat[key] * 100
-                    printf "%-15s %15.2f %15.2f %14.1f%%\n", key, engine1_lat[key], engine2_lat[key], reduction
+                    printf "%-10s %12.2f %12.2f %11.1f%%\n", key, engine1_lat[key], engine2_lat[key], reduction
                 }
             }
-        }' "${COMPARISON_DIR}/merged_results.csv"
+        }' "${COMPARISON_DIR}/merged_results.csv" | sort -n)
+        printf "%-10s %12s %12s %12s\n" "Threads" "Lat [1]" "Lat [2]" "Reduction"
+        echo "-------------------------------------------------"
+        echo "$latency_data"
 
     } | tee "${COMPARISON_DIR}/comparison_report.txt"
 }
