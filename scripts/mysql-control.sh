@@ -6,7 +6,7 @@ source "${SCRIPT_DIR}/../common/config/env.sh"
 
 usage() {
     cat << EOF
-Usage: $0 <engine> <action>
+Usage: $0 <engine> <action> [--mode <mode>]
 
 Engine:
     vanilla-innodb    - Vanilla MySQL 8.4.7 with InnoDB
@@ -20,44 +20,78 @@ Action:
     status      - Check MySQL server status
     init        - Initialize MySQL data directory
 
+Mode (optional, for start/restart only):
+    --mode bulkload   - Use bulk load configuration (fast but unsafe)
+                        Optimized for data preparation phase
+    --mode benchmark  - Use benchmark configuration (default)
+                        Safe settings for actual benchmarking
+
 Example:
     $0 vanilla-innodb start
-    $0 percona-innodb start
+    $0 percona-innodb start --mode bulkload
     $0 percona-myrocks stop
-
-    # Legacy usage still works:
-    $0 innodb start
-    $0 myrocks stop
 EOF
     exit 1
 }
 
-if [ $# -ne 2 ]; then
+if [ $# -lt 2 ]; then
     usage
 fi
 
 ENGINE=$1
 ACTION=$2
+CONFIG_MODE="benchmark"  # Default mode
+
+# Parse optional --mode argument
+shift 2
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --mode)
+            CONFIG_MODE="$2"
+            if [[ "$CONFIG_MODE" != "bulkload" && "$CONFIG_MODE" != "benchmark" ]]; then
+                log_error "Invalid mode: $CONFIG_MODE (must be 'bulkload' or 'benchmark')"
+                exit 1
+            fi
+            shift 2
+            ;;
+        *)
+            log_error "Unknown option: $1"
+            usage
+            ;;
+    esac
+done
 
 # Set engine-specific variables
 case $ENGINE in
     vanilla-innodb)
-        CONFIG_FILE="${SCRIPT_DIR}/../common/config/my-vanilla-innodb.cnf"
         DATADIR="${MYSQL_DATADIR_VANILLA_INNODB}"
         SOCKET="${MYSQL_SOCKET_VANILLA_INNODB}"
         PID_FILE="${MYSQL_PID_VANILLA_INNODB}"
+        if [ "$CONFIG_MODE" = "bulkload" ]; then
+            CONFIG_FILE="${SCRIPT_DIR}/../common/config/my-vanilla-innodb-bulkload.cnf"
+        else
+            CONFIG_FILE="${SCRIPT_DIR}/../common/config/my-vanilla-innodb.cnf"
+        fi
         ;;
     percona-innodb)
-        CONFIG_FILE="${SCRIPT_DIR}/../common/config/my-percona-innodb.cnf"
         DATADIR="${MYSQL_DATADIR_PERCONA_INNODB}"
         SOCKET="${MYSQL_SOCKET_PERCONA_INNODB}"
         PID_FILE="${MYSQL_PID_PERCONA_INNODB}"
+        if [ "$CONFIG_MODE" = "bulkload" ]; then
+            CONFIG_FILE="${SCRIPT_DIR}/../common/config/my-percona-innodb-bulkload.cnf"
+        else
+            CONFIG_FILE="${SCRIPT_DIR}/../common/config/my-percona-innodb.cnf"
+        fi
         ;;
     percona-myrocks)
-        CONFIG_FILE="${SCRIPT_DIR}/../common/config/my-percona-myrocks.cnf"
         DATADIR="${MYSQL_DATADIR_PERCONA_MYROCKS}"
         SOCKET="${MYSQL_SOCKET_PERCONA_MYROCKS}"
         PID_FILE="${MYSQL_PID_PERCONA_MYROCKS}"
+        if [ "$CONFIG_MODE" = "bulkload" ]; then
+            CONFIG_FILE="${SCRIPT_DIR}/../common/config/my-percona-myrocks-bulkload.cnf"
+        else
+            CONFIG_FILE="${SCRIPT_DIR}/../common/config/my-percona-myrocks.cnf"
+        fi
         ;;
     *)
         log_error "Unknown engine: $ENGINE"
@@ -116,7 +150,10 @@ init_mysql() {
 }
 
 start_mysql() {
-    log_info "Starting MySQL with $ENGINE engine"
+    log_info "Starting MySQL with $ENGINE engine (mode: $CONFIG_MODE)"
+    if [ "$CONFIG_MODE" = "bulkload" ]; then
+        log_info "WARNING: Using bulk load configuration"
+    fi
 
     # Check SSD device and mount
     log_info "Verifying SSD device and mount..."

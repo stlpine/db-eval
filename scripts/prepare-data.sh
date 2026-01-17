@@ -159,9 +159,9 @@ echo ""
 log_info "Initializing MySQL data directory..."
 "${SCRIPT_DIR}/mysql-control.sh" "$ENGINE" init
 
-# Start MySQL
-log_info "Starting MySQL..."
-"${SCRIPT_DIR}/mysql-control.sh" "$ENGINE" start
+# Start MySQL with bulk load configuration for faster data loading
+log_info "Starting MySQL with bulk load configuration..."
+"${SCRIPT_DIR}/mysql-control.sh" "$ENGINE" start --mode bulkload
 sleep 5
 
 # Prepare data for each benchmark type

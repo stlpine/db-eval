@@ -1,0 +1,71 @@
+[mysqld]
+# Percona Server 8.4 with MyRocks - BULK LOAD CONFIGURATION
+# WARNING: These settings prioritize speed over durability
+# Use only for data preparation, not for benchmarking or production
+user = mysql
+port = 3306
+socket = /tmp/mysql_percona_myrocks.sock
+pid-file = /tmp/mysql_percona_myrocks.pid
+datadir = /mnt/nvme/mysql-percona-myrocks/data
+
+# Storage Engine
+default-storage-engine = ROCKSDB
+
+# Load RocksDB Plugin
+plugin-load-add = ha_rocksdb.so
+
+# Transaction and Collation Settings (recommended for MyRocks)
+transaction-isolation = READ-COMMITTED
+character-set-server = latin1
+collation-server = latin1_bin
+
+# Binary log (ROW format)
+binlog_format = ROW
+
+# Disable query logging
+slow_query_log = 0
+general_log = 0
+
+# Disable Performance Schema
+performance_schema = OFF
+
+# ============================================
+# BULK LOAD OPTIMIZATIONS (RocksDB-specific)
+# ============================================
+
+# DANGEROUS: Enable RocksDB bulk load mode
+# This bypasses compaction and uniqueness checks for maximum speed
+rocksdb_bulk_load = 1
+
+# Allow bulk load to work with unsorted input
+rocksdb_bulk_load_allow_unsorted = 1
+
+# Commit large transactions in chunks to avoid memory issues
+rocksdb_commit_in_the_middle = 1
+
+# Larger write buffers for bulk loading
+rocksdb_write_buffer_size = 256M
+rocksdb_max_write_buffer_number = 8
+
+# More background jobs for compaction/flush
+rocksdb_max_background_jobs = 8
+
+# Increase block cache (similar to buffer pool)
+# System has ~63GB RAM, allocate ~48GB for block cache during bulk load
+rocksdb_block_cache_size = 48G
+
+# Disable WAL sync for speed (DANGEROUS)
+rocksdb_flush_log_at_trx_commit = 0
+
+# DANGEROUS: Disable binary log sync
+sync_binlog = 0
+
+# Increase max connections for parallel loaders
+max_connections = 200
+
+# Increase sort buffer for index creation
+sort_buffer_size = 64M
+read_buffer_size = 16M
+
+[client]
+socket = /tmp/mysql_percona_myrocks.sock
