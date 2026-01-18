@@ -43,9 +43,11 @@ rocksdb_bulk_load_allow_unsorted = 1
 # Commit large transactions in chunks to avoid memory issues
 rocksdb_commit_in_the_middle = 1
 
-# Larger write buffers for bulk loading
-rocksdb_write_buffer_size = 256M
-rocksdb_max_write_buffer_number = 8
+# Total write buffer memory limit across all column families (2GB)
+rocksdb_db_write_buffer_size = 2G
+
+# Per-column family options: write_buffer_size and max_write_buffer_number
+rocksdb_default_cf_options = write_buffer_size=256m;max_write_buffer_number=8
 
 # More background jobs for compaction/flush
 rocksdb_max_background_jobs = 8
