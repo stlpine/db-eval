@@ -178,12 +178,19 @@ start_mysql() {
     # Ensure mysql user owns the data directory
     sudo chown -R mysql:mysql "$DATADIR"
 
-    # Start MySQL (redirect output to avoid terminal corruption)
-    sudo mysqld --defaults-file="$CONFIG_FILE" --user=mysql > /dev/null 2>&1 &
+    # Error log file
+    ERROR_LOG="${DATADIR}/error.log"
+    sudo rm -f "$ERROR_LOG"
+    sudo touch "$ERROR_LOG"
+    sudo chown mysql:mysql "$ERROR_LOG"
 
-    # Wait for MySQL to start
+    # Start MySQL with error logging
+    sudo mysqld --defaults-file="$CONFIG_FILE" --user=mysql --log-error="$ERROR_LOG" > /dev/null 2>&1 &
+
+    # Wait for MySQL to start (MyRocks may take longer)
     log_info "Waiting for MySQL to start..."
-    for i in {1..30}; do
+    TIMEOUT=60
+    for i in $(seq 1 $TIMEOUT); do
         if mysqladmin --socket="$SOCKET" ping &>/dev/null; then
             log_info "MySQL started successfully with $ENGINE engine"
             return 0
@@ -191,7 +198,12 @@ start_mysql() {
         sleep 1
     done
 
-    log_error "MySQL failed to start within 30 seconds"
+    log_error "MySQL failed to start within $TIMEOUT seconds"
+    log_error "Check error log: $ERROR_LOG"
+    if [ -f "$ERROR_LOG" ]; then
+        log_error "Last 20 lines of error log:"
+        tail -20 "$ERROR_LOG" >&2
+    fi
     exit 1
 }
 
