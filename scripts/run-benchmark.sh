@@ -131,9 +131,18 @@ case $ENGINE in
         ;;
 esac
 
+# Helper function: Drop OS page cache
+drop_page_cache() {
+    log_info "Dropping OS page cache..."
+    sync
+    echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null
+    log_info "Page cache dropped"
+}
+
 # Helper function: Start MySQL with cold buffer pool
 start_mysql_cold() {
     ensure_mysql_stopped "$ENGINE"
+    drop_page_cache
     log_info "Starting MySQL (cold)..."
     "${SCRIPT_DIR}/mysql-control.sh" "$ENGINE" start
     sleep 5
