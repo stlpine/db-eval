@@ -1,6 +1,12 @@
 #!/bin/bash
 # Full benchmark runner (prepare + run)
-# Convenience wrapper that calls prepare-data.sh followed by run-benchmark.sh
+#
+# For each benchmark type, this wrapper runs:
+#   1. prepare-data.sh (includes SSD reset)
+#   2. run-benchmark.sh
+#
+# When multiple benchmarks are specified, each is processed sequentially
+# with a fresh SSD format before each, ensuring identical disk conditions.
 
 set -e
 set -o pipefail
@@ -25,9 +31,8 @@ Options:
     -s, --skip-prepare        Skip data preparation (use existing data)
     -h, --help                Show this help message
 
-This script runs the full benchmark workflow:
-  1. Reset SSD and prepare data (unless --skip-prepare)
-  2. Run benchmarks
+Each benchmark type is processed sequentially: prepare (with SSD reset) -> run.
+This ensures identical disk conditions for each benchmark.
 
 For memory-limited benchmarks, use run-cgroup.sh instead.
 
@@ -79,32 +84,78 @@ case $ENGINE in
         ;;
 esac
 
+# Build array of benchmark types
+BENCH_ARRAY=()
+if [ "$BENCHMARK" = "all" ]; then
+    BENCH_ARRAY=("sysbench" "tpcc" "sysbench-tpcc")
+else
+    IFS=',' read -ra BENCH_ARRAY <<< "$BENCHMARK"
+    # Validate benchmark types
+    for bench in "${BENCH_ARRAY[@]}"; do
+        case $bench in
+            sysbench|tpcc|sysbench-tpcc)
+                ;;
+            *)
+                log_error "Invalid benchmark: $bench"
+                usage
+                ;;
+        esac
+    done
+fi
+
 log_info "=========================================="
 log_info "Full Benchmark Runner"
 log_info "=========================================="
 log_info "Engine: $ENGINE"
-log_info "Benchmark: $BENCHMARK"
+log_info "Benchmarks: ${BENCH_ARRAY[*]}"
 log_info "Skip prepare: $SKIP_PREPARE"
 log_info "=========================================="
 echo ""
 
 START_TIME=$(date +%s)
 
-# Phase 1: Data preparation
-if [ "$SKIP_PREPARE" = false ]; then
-    "${SCRIPT_DIR}/prepare-data.sh" -e "$ENGINE" -b "$BENCHMARK"
-    echo ""
-fi
+TOTAL_BENCHMARKS=${#BENCH_ARRAY[@]}
+CURRENT=0
 
-# Phase 2: Run benchmark
-"${SCRIPT_DIR}/run-benchmark.sh" -e "$ENGINE" -b "$BENCHMARK"
+for bench in "${BENCH_ARRAY[@]}"; do
+    CURRENT=$((CURRENT + 1))
+
+    log_info "=========================================="
+    log_info "Processing benchmark $CURRENT/$TOTAL_BENCHMARKS: $bench"
+    log_info "=========================================="
+    echo ""
+
+    # Phase 1: Data preparation
+    if [ "$SKIP_PREPARE" = false ]; then
+        log_info "Phase 1: Data Preparation for $bench"
+        log_info "  - SSD will be reset for clean state"
+        echo ""
+
+        "${SCRIPT_DIR}/prepare-data.sh" -e "$ENGINE" -b "$bench"
+
+        echo ""
+        log_info "Data preparation for $bench completed"
+        echo ""
+    fi
+
+    # Phase 2: Run benchmark
+    log_info "Phase 2: Run $bench Benchmark"
+    echo ""
+
+    "${SCRIPT_DIR}/run-benchmark.sh" -e "$ENGINE" -b "$bench"
+
+    echo ""
+    log_info "Benchmark $bench completed"
+    echo ""
+done
 
 END_TIME=$(date +%s)
 TOTAL_DURATION=$((END_TIME - START_TIME))
 
 log_info ""
 log_info "=========================================="
-log_info "Full benchmark completed for $ENGINE!"
+log_info "All benchmarks completed for $ENGINE!"
+log_info "Benchmarks: ${BENCH_ARRAY[*]}"
 log_info "Total duration: $TOTAL_DURATION seconds ($((TOTAL_DURATION / 60)) minutes)"
 log_info "=========================================="
 log_info ""

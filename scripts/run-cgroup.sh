@@ -1,12 +1,12 @@
 #!/bin/bash
 # Run benchmarks with cgroup memory limit
 #
-# This wrapper runs:
-#   1. prepare-data.sh WITHOUT cgroup (fast data loading)
+# For each benchmark type, this wrapper runs:
+#   1. prepare-data.sh WITHOUT cgroup (fast data loading, includes SSD reset)
 #   2. run-benchmark.sh WITH cgroup (memory-limited benchmark)
 #
-# This ensures data preparation is fast while the actual benchmark
-# runs under realistic memory constraints.
+# When multiple benchmarks are specified, each is processed sequentially
+# with a fresh SSD format before each, ensuring identical disk conditions.
 
 set -e
 set -o pipefail
@@ -33,8 +33,8 @@ Options:
     --skip-prepare            Skip data preparation (data must already exist)
     -h, --help                Show this help message
 
-This script runs data preparation WITHOUT cgroup limits (for speed),
-then runs the actual benchmark WITH cgroup limits (for measurement).
+Each benchmark type is processed sequentially: prepare (with SSD reset) -> run.
+This ensures identical disk conditions for each benchmark.
 
 Examples:
     $0 -e percona-innodb -b tpcc
@@ -84,6 +84,25 @@ case $ENGINE in
         ;;
 esac
 
+# Build array of benchmark types
+BENCH_ARRAY=()
+if [ "$BENCHMARK" = "all" ]; then
+    BENCH_ARRAY=("sysbench" "tpcc" "sysbench-tpcc")
+else
+    IFS=',' read -ra BENCH_ARRAY <<< "$BENCHMARK"
+    # Validate benchmark types
+    for bench in "${BENCH_ARRAY[@]}"; do
+        case $bench in
+            sysbench|tpcc|sysbench-tpcc)
+                ;;
+            *)
+                log_error "Invalid benchmark: $bench"
+                usage
+                ;;
+        esac
+    done
+fi
+
 # Check if cgroup exists
 if [ ! -d "$CGROUP_PATH" ]; then
     log_error "Cgroup '${CGROUP_NAME}' does not exist"
@@ -97,31 +116,59 @@ log_info "=========================================="
 log_info "Benchmark with Cgroup Memory Limit"
 log_info "=========================================="
 log_info "Engine: $ENGINE"
-log_info "Benchmark: $BENCHMARK"
+log_info "Benchmarks: ${BENCH_ARRAY[*]}"
 log_info "Cgroup: ${CGROUP_NAME}"
 log_info "Memory limit: ${MEMORY_LIMIT}"
 log_info "Skip prepare: $SKIP_PREPARE"
 log_info "=========================================="
 echo ""
 
-# Phase 1: Data preparation (WITHOUT cgroup - fast)
-if [ "$SKIP_PREPARE" = false ]; then
+START_TIME=$(date +%s)
+
+TOTAL_BENCHMARKS=${#BENCH_ARRAY[@]}
+CURRENT=0
+
+for bench in "${BENCH_ARRAY[@]}"; do
+    CURRENT=$((CURRENT + 1))
+
     log_info "=========================================="
-    log_info "Phase 1: Data Preparation (no cgroup limit)"
+    log_info "Processing benchmark $CURRENT/$TOTAL_BENCHMARKS: $bench"
     log_info "=========================================="
     echo ""
 
-    "${SCRIPT_DIR}/prepare-data.sh" -e "$ENGINE" -b "$BENCHMARK"
+    # Phase 1: Data preparation (WITHOUT cgroup - fast)
+    if [ "$SKIP_PREPARE" = false ]; then
+        log_info "Phase 1: Data Preparation for $bench (no cgroup limit)"
+        log_info "  - SSD will be reset for clean state"
+        echo ""
+
+        "${SCRIPT_DIR}/prepare-data.sh" -e "$ENGINE" -b "$bench"
+
+        echo ""
+        log_info "Data preparation for $bench completed"
+        echo ""
+    fi
+
+    # Phase 2: Run benchmark (WITH cgroup - memory limited)
+    log_info "Phase 2: Run $bench Benchmark (cgroup limit: ${MEMORY_LIMIT})"
+    echo ""
+
+    sudo cgexec -g memory:${CGROUP_NAME} "${SCRIPT_DIR}/run-benchmark.sh" -e "$ENGINE" -b "$bench"
 
     echo ""
-    log_info "Data preparation completed"
+    log_info "Benchmark $bench completed"
     echo ""
-fi
+done
 
-# Phase 2: Run benchmark (WITH cgroup - memory limited)
-log_info "=========================================="
-log_info "Phase 2: Run Benchmark (cgroup limit: ${MEMORY_LIMIT})"
-log_info "=========================================="
-echo ""
+END_TIME=$(date +%s)
+TOTAL_DURATION=$((END_TIME - START_TIME))
 
-exec sudo cgexec -g memory:${CGROUP_NAME} "${SCRIPT_DIR}/run-benchmark.sh" -e "$ENGINE" -b "$BENCHMARK"
+log_info ""
+log_info "=========================================="
+log_info "All benchmarks completed for $ENGINE!"
+log_info "Benchmarks: ${BENCH_ARRAY[*]}"
+log_info "Total duration: $TOTAL_DURATION seconds ($((TOTAL_DURATION / 60)) minutes)"
+log_info "=========================================="
+log_info ""
+log_info "Results saved in: ${RESULTS_DIR}/"
+log_info ""
