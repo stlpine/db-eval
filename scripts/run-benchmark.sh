@@ -112,6 +112,23 @@ log_info "Benchmarks to run:"
 log_info "=========================================="
 echo ""
 
+# Check if MySQL service is already running and stop it
+log_info "Checking for running MySQL service..."
+if systemctl is-active --quiet mysql; then
+    log_info "MySQL service is already running. Stopping it..."
+    sudo systemctl stop mysql
+    sleep 3
+
+    if systemctl is-active --quiet mysql; then
+        log_error "Failed to stop MySQL service. Please stop it manually and try again."
+        exit 1
+    fi
+    log_info "MySQL service stopped successfully"
+else
+    log_info "MySQL service is not running"
+fi
+echo ""
+
 # Verify SSD is mounted
 check_ssd_mount || {
     log_error "SSD mount check failed"
