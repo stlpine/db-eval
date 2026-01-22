@@ -177,6 +177,77 @@ stop_mysql() {
     sleep 3
 }
 
+# Helper function: Capture engine statistics
+capture_engine_stats() {
+    local benchmark_type=$1
+    local result_dir=$2
+
+    if [ "$ENGINE" = "percona-myrocks" ]; then
+        capture_rocksdb_stats "$result_dir"
+    else
+        capture_innodb_stats "$result_dir"
+    fi
+}
+
+# Helper function: Capture RocksDB statistics (for MyRocks only)
+# Note: SHOW ENGINE ROCKSDB STATUS is already captured in benchmark_config.log
+capture_rocksdb_stats() {
+    local result_dir=$1
+
+    log_info "Capturing RocksDB metrics..."
+
+    local stats_file="${result_dir}/rocksdb_metrics.txt"
+
+    {
+        echo "=== RocksDB Metrics (captured at $(date)) ==="
+        echo ""
+        echo "=== Stall Statistics ==="
+        mysql --socket="$SOCKET" -e "SELECT * FROM INFORMATION_SCHEMA.ROCKSDB_DBSTATS WHERE stat_type LIKE '%stall%';" 2>/dev/null
+        echo ""
+        echo "=== Compaction Statistics ==="
+        mysql --socket="$SOCKET" -e "SELECT * FROM INFORMATION_SCHEMA.ROCKSDB_DBSTATS WHERE stat_type LIKE '%compact%';" 2>/dev/null
+        echo ""
+        echo "=== Write Statistics ==="
+        mysql --socket="$SOCKET" -e "SELECT * FROM INFORMATION_SCHEMA.ROCKSDB_DBSTATS WHERE stat_type LIKE '%write%';" 2>/dev/null
+        echo ""
+        echo "=== All DB Statistics ==="
+        mysql --socket="$SOCKET" -e "SELECT * FROM INFORMATION_SCHEMA.ROCKSDB_DBSTATS;" 2>/dev/null
+    } > "$stats_file"
+
+    log_info "RocksDB metrics saved to: $stats_file"
+}
+
+# Helper function: Capture InnoDB statistics
+# Note: SHOW ENGINE INNODB STATUS and SHOW GLOBAL STATUS are already captured in benchmark_config.log
+capture_innodb_stats() {
+    local result_dir=$1
+
+    log_info "Capturing InnoDB metrics..."
+
+    local stats_file="${result_dir}/innodb_metrics.txt"
+
+    {
+        echo "=== InnoDB Metrics (captured at $(date)) ==="
+        echo ""
+        echo "=== Buffer Pool Wait/Stall Metrics ==="
+        mysql --socket="$SOCKET" -e "SELECT NAME, COUNT, STATUS FROM INFORMATION_SCHEMA.INNODB_METRICS WHERE NAME IN ('buffer_pool_wait_free', 'buffer_pool_reads', 'buffer_pool_read_requests', 'buffer_pool_write_requests');" 2>/dev/null
+        echo ""
+        echo "=== Log Wait Metrics ==="
+        mysql --socket="$SOCKET" -e "SELECT NAME, COUNT, STATUS FROM INFORMATION_SCHEMA.INNODB_METRICS WHERE NAME LIKE '%log_wait%' OR NAME LIKE '%log_pending%' OR NAME IN ('log_waits', 'log_write_requests', 'log_writes');" 2>/dev/null
+        echo ""
+        echo "=== Checkpoint/Flush Metrics ==="
+        mysql --socket="$SOCKET" -e "SELECT NAME, COUNT, STATUS FROM INFORMATION_SCHEMA.INNODB_METRICS WHERE NAME LIKE '%checkpoint%' OR NAME LIKE '%flush%';" 2>/dev/null
+        echo ""
+        echo "=== Lock/Mutex Wait Metrics ==="
+        mysql --socket="$SOCKET" -e "SELECT NAME, COUNT, STATUS FROM INFORMATION_SCHEMA.INNODB_METRICS WHERE NAME LIKE '%lock_wait%' OR NAME LIKE '%mutex%';" 2>/dev/null
+        echo ""
+        echo "=== All InnoDB Metrics ==="
+        mysql --socket="$SOCKET" -e "SELECT NAME, COUNT, STATUS FROM INFORMATION_SCHEMA.INNODB_METRICS;" 2>/dev/null
+    } > "$stats_file"
+
+    log_info "InnoDB metrics saved to: $stats_file"
+}
+
 START_TIME=$(date +%s)
 
 # Run benchmarks (MySQL restarted between each for cold buffer pool)
@@ -199,6 +270,7 @@ if [ "$RUN_SYSBENCH" = true ]; then
     LATEST_RESULT=$(ls -td "${RESULTS_DIR}/sysbench/${ENGINE}"/* 2>/dev/null | head -1)
     log_info "Sysbench results: $LATEST_RESULT"
 
+    capture_engine_stats "sysbench" "$LATEST_RESULT"
     stop_mysql
 fi
 
@@ -221,6 +293,7 @@ if [ "$RUN_TPCC" = true ]; then
     LATEST_RESULT=$(ls -td "${RESULTS_DIR}/tpcc/${ENGINE}"/* 2>/dev/null | head -1)
     log_info "TPC-C results: $LATEST_RESULT"
 
+    capture_engine_stats "tpcc" "$LATEST_RESULT"
     stop_mysql
 fi
 
@@ -243,6 +316,7 @@ if [ "$RUN_SYSBENCH_TPCC" = true ]; then
     LATEST_RESULT=$(ls -td "${RESULTS_DIR}/sysbench-tpcc/${ENGINE}"/* 2>/dev/null | head -1)
     log_info "Sysbench-TPCC results: $LATEST_RESULT"
 
+    capture_engine_stats "sysbench-tpcc" "$LATEST_RESULT"
     stop_mysql
 fi
 

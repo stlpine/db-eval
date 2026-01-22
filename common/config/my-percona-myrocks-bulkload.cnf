@@ -47,7 +47,14 @@ rocksdb_commit_in_the_middle = 1
 rocksdb_db_write_buffer_size = 2G
 
 # Per-column family options: write_buffer_size and max_write_buffer_number
-rocksdb_default_cf_options = write_buffer_size=256m;max_write_buffer_number=8
+# Disable compression for fair architectural comparison
+rocksdb_default_cf_options = write_buffer_size=256m;max_write_buffer_number=8;compression=kNoCompression
+
+# Enable concurrent memtable writes for better multi-core performance
+rocksdb_allow_concurrent_memtable_write = ON
+
+# Unlimited open files (avoid open/close overhead)
+rocksdb_max_open_files = -1
 
 # More background jobs for compaction/flush
 rocksdb_max_background_jobs = 8
