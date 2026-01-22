@@ -130,12 +130,12 @@ init_mysql() {
     sudo mkdir -p "$PARENT_DIR"
     sudo chown mysql:mysql "$PARENT_DIR" || exit 1
 
-    # For MyRocks: create a temp config without default-storage-engine and plugin-load
+    # For MyRocks: create a temp config without RocksDB-specific options
     # because --initialize can't use RocksDB (system tables need InnoDB, plugins not loaded yet)
     INIT_CONFIG="$CONFIG_FILE"
     if [ "$ENGINE" = "percona-myrocks" ]; then
         INIT_CONFIG="/tmp/my-myrocks-init.cnf"
-        grep -v -E "^default-storage-engine|^plugin-load" "$CONFIG_FILE" > "$INIT_CONFIG"
+        grep -v -E "^default-storage-engine|^plugin-load|^rocksdb" "$CONFIG_FILE" > "$INIT_CONFIG"
         chmod 644 "$INIT_CONFIG"
     fi
 
