@@ -58,7 +58,7 @@ export MYSQL_PID_PERCONA_MYROCKS="/tmp/mysql_percona_myrocks.pid"
 
 # Benchmark Configuration
 export BENCHMARK_DB="benchmarkdb"
-export BENCHMARK_THREADS="1 4 16 64"
+export BENCHMARK_THREADS="1 4 16 32"
 export BENCHMARK_DURATION="300"  # seconds
 export BENCHMARK_WARMUP="60"     # seconds
 
@@ -72,9 +72,9 @@ export TPCC_WAREHOUSES="2000"
 export TPCC_DURATION="600"  # seconds
 
 # Sysbench-TPCC Configuration
-export SYSBENCH_TPCC_TABLES="10"          # Number of warehouse tables
-export SYSBENCH_TPCC_SCALE="200"          # Warehouses per table (total: tables × scale = 2000)
-export SYSBENCH_TPCC_THREADS="1 4 16 64"  # Thread levels to test
+export SYSBENCH_TPCC_TABLES="1"          # Number of warehouse tables
+export SYSBENCH_TPCC_SCALE="2000"          # Warehouses per table (total: tables × scale = 2000)
+export SYSBENCH_TPCC_THREADS="1 4 16 32"  # Thread levels to test
 export SYSBENCH_TPCC_DURATION="600"       # Benchmark duration (10 minutes, matching tpcc-mysql)
 export SYSBENCH_TPCC_WARMUP="60"          # Warmup period in seconds
 export SYSBENCH_TPCC_REPORT_INTERVAL="10" # Report interval in seconds
