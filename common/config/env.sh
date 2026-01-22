@@ -22,6 +22,12 @@ export SSD_DEVICE="$("${_ENV_DIR}/../../scripts/find_ssd.sh")"
 # SSD Mount Point - MODIFY THIS TO YOUR SSD MOUNT POINT
 export SSD_MOUNT="/mnt/nvme"
 
+# Backup SSD Configuration
+export BACKUP_SSD_ID="nvme-Samsung_SSD_990_PRO_1TB_S6Z1NJ0XC01846F"
+export BACKUP_SSD_DEVICE="$("${_ENV_DIR}/../../scripts/find_backup_ssd.sh" 2>/dev/null)"
+export BACKUP_SSD_MOUNT="/mnt/nvme-backup"
+export BACKUP_DIR="${BACKUP_SSD_MOUNT}/mysql-backup"
+
 # SSD Temperature Settings
 # Target temperature for cooldown before benchmarking (in Celsius)
 export SSD_TARGET_TEMP="48"
