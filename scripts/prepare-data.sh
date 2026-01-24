@@ -210,17 +210,24 @@ for bench in "${BENCH_ARRAY[@]}"; do
     esac
 done
 
-# Validate: tpcc and sysbench-tpcc cannot be prepared together (they share the same database)
-if [ "$PREPARE_TPCC" = true ] && [ "$PREPARE_SYSBENCH_TPCC" = true ]; then
-    log_error "Cannot prepare both 'tpcc' and 'sysbench-tpcc' together."
-    log_error "They use the same database and one would overwrite the other."
+# Validate: only one benchmark can be prepared at a time (they all share the same database)
+BENCH_COUNT=0
+[ "$PREPARE_SYSBENCH" = true ] && BENCH_COUNT=$((BENCH_COUNT + 1))
+[ "$PREPARE_TPCC" = true ] && BENCH_COUNT=$((BENCH_COUNT + 1))
+[ "$PREPARE_SYSBENCH_TPCC" = true ] && BENCH_COUNT=$((BENCH_COUNT + 1))
+
+if [ "$BENCH_COUNT" -gt 1 ]; then
+    log_error "Cannot prepare multiple benchmarks together."
+    log_error "All benchmarks use the same database and would overwrite each other."
     log_error "Please prepare them separately and create separate backups."
     exit 1
 fi
 
-# For restore mode, we need exactly one TPC-C benchmark type
+# For restore mode, we need exactly one benchmark type
 RESTORE_BENCHMARK=""
-if [ "$PREPARE_TPCC" = true ]; then
+if [ "$PREPARE_SYSBENCH" = true ]; then
+    RESTORE_BENCHMARK="sysbench"
+elif [ "$PREPARE_TPCC" = true ]; then
     RESTORE_BENCHMARK="tpcc"
 elif [ "$PREPARE_SYSBENCH_TPCC" = true ]; then
     RESTORE_BENCHMARK="sysbench-tpcc"
@@ -230,7 +237,7 @@ fi
 USE_BACKUP=false
 if [ "$FROM_BACKUP" = true ]; then
     if [ -z "$RESTORE_BENCHMARK" ]; then
-        log_error "Restore from backup requires specifying 'tpcc' or 'sysbench-tpcc'"
+        log_error "Restore from backup requires specifying 'sysbench', 'tpcc', or 'sysbench-tpcc'"
         exit 1
     fi
     USE_BACKUP=true

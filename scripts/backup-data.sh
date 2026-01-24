@@ -20,6 +20,7 @@ Options:
                               - percona-innodb
                               - percona-myrocks
     -b, --benchmark <type>    Benchmark type (required):
+                              - sysbench
                               - tpcc
                               - sysbench-tpcc
     -j, --jobs <num>          Number of parallel copy jobs (default: 96)
@@ -94,7 +95,7 @@ esac
 
 # Validate benchmark
 case $BENCHMARK in
-    tpcc|sysbench-tpcc)
+    sysbench|tpcc|sysbench-tpcc)
         ;;
     *)
         log_error "Invalid benchmark: $BENCHMARK"
