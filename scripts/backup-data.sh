@@ -15,29 +15,35 @@ Usage: $0 [options]
 Backup prepared MySQL benchmark data to backup SSD for fast restore.
 
 Options:
-    -e, --engine <engine>     Engine to backup (default: all engines with data):
+    -e, --engine <engine>     Engine to backup (required):
                               - vanilla-innodb
                               - percona-innodb
                               - percona-myrocks
-                              - all
+    -b, --benchmark <type>    Benchmark type (required):
+                              - tpcc
+                              - sysbench-tpcc
     -j, --jobs <num>          Number of parallel copy jobs (default: 96)
     -h, --help                Show this help message
 
+Note: Binary logs are excluded from backup to save space (~65% reduction).
+      Each engine+benchmark combination is stored separately.
+
 Prerequisites:
-    1. Data must be prepared using prepare-data.sh
+    1. Data must be prepared using prepare-data.sh with a SINGLE benchmark
     2. MySQL must be stopped
     3. Backup SSD must be mounted (run: sudo ./scripts/setup-backup-ssd.sh mount)
 
 Examples:
-    $0 -e percona-myrocks
-    $0 -e all
-    $0 -e vanilla-innodb -j 64
+    $0 -e percona-innodb -b tpcc
+    $0 -e percona-myrocks -b sysbench-tpcc
+    $0 -e vanilla-innodb -b tpcc -j 64
 EOF
     exit 1
 }
 
 # Default options
-ENGINE="all"
+ENGINE=""
+BENCHMARK=""
 PARALLEL_JOBS=96
 
 # Parse arguments
@@ -45,6 +51,10 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         -e|--engine)
             ENGINE="$2"
+            shift 2
+            ;;
+        -b|--benchmark)
+            BENCHMARK="$2"
             shift 2
             ;;
         -j|--jobs)
@@ -60,6 +70,37 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Validate required arguments
+if [ -z "$ENGINE" ]; then
+    log_error "Engine is required (-e)"
+    usage
+fi
+
+if [ -z "$BENCHMARK" ]; then
+    log_error "Benchmark type is required (-b)"
+    usage
+fi
+
+# Validate engine
+case $ENGINE in
+    vanilla-innodb|percona-innodb|percona-myrocks)
+        ;;
+    *)
+        log_error "Invalid engine: $ENGINE"
+        usage
+        ;;
+esac
+
+# Validate benchmark
+case $BENCHMARK in
+    tpcc|sysbench-tpcc)
+        ;;
+    *)
+        log_error "Invalid benchmark: $BENCHMARK"
+        usage
+        ;;
+esac
 
 # Check backup SSD is available
 check_backup_ssd() {
@@ -129,17 +170,18 @@ get_datadir() {
 # Backup data for one engine using parallel copy
 backup_engine() {
     local engine=$1
+    local benchmark=$2
     local src_dir=$(get_datadir "$engine")
-    local dst_dir="${BACKUP_DIR}/${engine}"
+    local dst_dir="${BACKUP_DIR}/${engine}-${benchmark}"
 
     if [ ! -d "$src_dir" ]; then
-        log_info "No data found for $engine at $src_dir, skipping"
-        return 0
+        log_error "No data found for $engine at $src_dir"
+        exit 1
     fi
 
     check_mysql_stopped "$engine" || exit 1
 
-    log_info "Backing up $engine..."
+    log_info "Backing up $engine ($benchmark)..."
     log_info "  Source: $src_dir"
     log_info "  Destination: $dst_dir"
 
@@ -152,29 +194,32 @@ backup_engine() {
     # Create backup directory structure
     mkdir -p "$dst_dir"
 
-    # Get source size for progress info
+    # Get source size for progress info (excluding binlogs for accurate estimate)
     local src_size=$(du -sh "$src_dir" 2>/dev/null | cut -f1)
-    log_info "  Data size: $src_size"
+    local binlog_size=$(du -shc "$src_dir"/binlog.* 2>/dev/null | tail -1 | cut -f1)
+    log_info "  Total data size: $src_size"
+    log_info "  Binary logs (excluded): ${binlog_size:-0}"
 
-    # Parallel copy
-    log_info "  Copying with $PARALLEL_JOBS parallel jobs..."
+    # Parallel copy (excluding binary logs)
+    log_info "  Copying with $PARALLEL_JOBS parallel jobs (excluding binlogs)..."
     cd "$src_dir"
 
     # Create directory structure first
     find . -type d -exec mkdir -p "$dst_dir/{}" \;
 
-    # Copy files in parallel
-    find . -type f | parallel -j "$PARALLEL_JOBS" --will-cite --progress \
+    # Copy files in parallel, excluding binary logs
+    find . -type f ! -name 'binlog.*' ! -name 'binlog.index' | \
+        parallel -j "$PARALLEL_JOBS" --will-cite --progress \
         cp --preserve=all {} "$dst_dir/{}"
 
     # Set proper permissions
     chmod 0700 "$dst_dir"
 
-    log_info "  Backup complete for $engine"
+    log_info "  Backup complete for $engine ($benchmark)"
 
     # Verify backup size
     local dst_size=$(du -sh "$dst_dir" 2>/dev/null | cut -f1)
-    log_info "  Backup size: $dst_size"
+    log_info "  Backup size: $dst_size (binlogs excluded)"
 }
 
 # Main
@@ -182,8 +227,10 @@ log_info "=========================================="
 log_info "Backup MySQL Benchmark Data"
 log_info "=========================================="
 log_info "Engine: $ENGINE"
+log_info "Benchmark: $BENCHMARK"
 log_info "Parallel jobs: $PARALLEL_JOBS"
 log_info "Backup directory: $BACKUP_DIR"
+log_info "Backup name: ${ENGINE}-${BENCHMARK}"
 log_info "=========================================="
 echo ""
 
@@ -193,34 +240,10 @@ check_backup_ssd
 # Create backup directory
 mkdir -p "$BACKUP_DIR"
 
-# Determine engines to backup
-ENGINES_TO_BACKUP=()
-if [ "$ENGINE" = "all" ]; then
-    for e in vanilla-innodb percona-innodb percona-myrocks; do
-        datadir=$(get_datadir "$e")
-        if [ -d "$datadir" ]; then
-            ENGINES_TO_BACKUP+=("$e")
-        fi
-    done
-else
-    ENGINES_TO_BACKUP=("$ENGINE")
-fi
-
-if [ ${#ENGINES_TO_BACKUP[@]} -eq 0 ]; then
-    log_error "No data found to backup"
-    log_error "Run prepare-data.sh first"
-    exit 1
-fi
-
-log_info "Engines to backup: ${ENGINES_TO_BACKUP[*]}"
-echo ""
-
 START_TIME=$(date +%s)
 
-for engine in "${ENGINES_TO_BACKUP[@]}"; do
-    backup_engine "$engine"
-    echo ""
-done
+backup_engine "$ENGINE" "$BENCHMARK"
+echo ""
 
 END_TIME=$(date +%s)
 DURATION=$((END_TIME - START_TIME))
@@ -230,8 +253,8 @@ log_info "Backup completed!"
 log_info "Duration: $DURATION seconds ($((DURATION / 60)) minutes)"
 log_info "=========================================="
 log_info ""
-log_info "Backup location: $BACKUP_DIR"
+log_info "Backup location: $BACKUP_DIR/${ENGINE}-${BENCHMARK}"
 ls -la "$BACKUP_DIR"
 log_info ""
-log_info "To restore, use: ./scripts/prepare-data.sh -e <engine> --from-backup"
+log_info "To restore, use: ./scripts/prepare-data.sh -e $ENGINE -b $BENCHMARK --from-backup"
 log_info ""

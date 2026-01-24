@@ -14,11 +14,12 @@ usage() {
 Usage: $0 [options]
 
 Options:
-    -b, --benchmark <type>    Benchmark type (comma-separated or 'all'):
+    -b, --benchmark <type>    Benchmark type (required for restore, default: tpcc):
                               - sysbench
                               - tpcc
                               - sysbench-tpcc
-                              - all (default)
+                              NOTE: tpcc and sysbench-tpcc cannot be prepared together
+                              (they use the same database). Prepare them separately.
     -e, --engine <engine>     Engine to use (default: vanilla-innodb):
                               - vanilla-innodb
                               - percona-innodb
@@ -31,15 +32,15 @@ Options:
 
 Examples:
     $0 -e percona-innodb -b tpcc
-    $0 -e percona-myrocks --from-backup
-    $0 -e percona-innodb -b all --skip-reset
-    $0 -e vanilla-innodb --full
+    $0 -e percona-myrocks -b sysbench-tpcc --from-backup
+    $0 -e percona-innodb -b sysbench --skip-reset
+    $0 -e vanilla-innodb -b tpcc --full
 EOF
     exit 1
 }
 
 # Default options
-BENCHMARK="all"
+BENCHMARK=""
 ENGINE="vanilla-innodb"
 SKIP_RESET=false
 FROM_BACKUP=false
@@ -109,10 +110,11 @@ get_datadir() {
     esac
 }
 
-# Check if backup exists for engine
+# Check if backup exists for engine and benchmark
 check_backup_exists() {
     local engine=$1
-    local backup_path="${BACKUP_DIR}/${engine}"
+    local benchmark=$2
+    local backup_path="${BACKUP_DIR}/${engine}-${benchmark}"
 
     if [ -d "$backup_path" ] && [ "$(ls -A "$backup_path" 2>/dev/null)" ]; then
         return 0
@@ -136,11 +138,12 @@ check_backup_ssd_mounted() {
 # Restore data from backup SSD using parallel copy
 restore_from_backup() {
     local engine=$1
-    local backup_path="${BACKUP_DIR}/${engine}"
+    local benchmark=$2
+    local backup_path="${BACKUP_DIR}/${engine}-${benchmark}"
     local datadir=$(get_datadir "$engine")
     local parent_dir=$(dirname "$datadir")
 
-    log_info "Restoring $engine from backup..."
+    log_info "Restoring $engine ($benchmark) from backup..."
     log_info "  Source: $backup_path"
     log_info "  Destination: $datadir"
 
@@ -174,54 +177,79 @@ restore_from_backup() {
     # Set proper permissions
     chmod 0700 "$datadir"
 
-    log_info "  Restore complete for $engine"
+    log_info "  Restore complete for $engine ($benchmark)"
 }
+
+# Validate benchmark is specified
+if [ -z "$BENCHMARK" ]; then
+    log_error "Benchmark type is required (-b)"
+    usage
+fi
 
 # Determine which benchmarks to prepare
 PREPARE_SYSBENCH=false
 PREPARE_TPCC=false
 PREPARE_SYSBENCH_TPCC=false
 
-if [ "$BENCHMARK" = "all" ]; then
-    PREPARE_SYSBENCH=true
-    PREPARE_TPCC=true
-    PREPARE_SYSBENCH_TPCC=true
-else
-    IFS=',' read -ra BENCH_ARRAY <<< "$BENCHMARK"
-    for bench in "${BENCH_ARRAY[@]}"; do
-        case $bench in
-            sysbench)
-                PREPARE_SYSBENCH=true
-                ;;
-            tpcc)
-                PREPARE_TPCC=true
-                ;;
-            sysbench-tpcc)
-                PREPARE_SYSBENCH_TPCC=true
-                ;;
-            *)
-                log_error "Invalid benchmark: $bench"
-                usage
-                ;;
-        esac
-    done
+IFS=',' read -ra BENCH_ARRAY <<< "$BENCHMARK"
+for bench in "${BENCH_ARRAY[@]}"; do
+    case $bench in
+        sysbench)
+            PREPARE_SYSBENCH=true
+            ;;
+        tpcc)
+            PREPARE_TPCC=true
+            ;;
+        sysbench-tpcc)
+            PREPARE_SYSBENCH_TPCC=true
+            ;;
+        *)
+            log_error "Invalid benchmark: $bench"
+            usage
+            ;;
+    esac
+done
+
+# Validate: tpcc and sysbench-tpcc cannot be prepared together (they share the same database)
+if [ "$PREPARE_TPCC" = true ] && [ "$PREPARE_SYSBENCH_TPCC" = true ]; then
+    log_error "Cannot prepare both 'tpcc' and 'sysbench-tpcc' together."
+    log_error "They use the same database and one would overwrite the other."
+    log_error "Please prepare them separately and create separate backups."
+    exit 1
+fi
+
+# For restore mode, we need exactly one TPC-C benchmark type
+RESTORE_BENCHMARK=""
+if [ "$PREPARE_TPCC" = true ]; then
+    RESTORE_BENCHMARK="tpcc"
+elif [ "$PREPARE_SYSBENCH_TPCC" = true ]; then
+    RESTORE_BENCHMARK="sysbench-tpcc"
 fi
 
 # Determine if we should use backup
 USE_BACKUP=false
 if [ "$FROM_BACKUP" = true ]; then
+    if [ -z "$RESTORE_BENCHMARK" ]; then
+        log_error "Restore from backup requires specifying 'tpcc' or 'sysbench-tpcc'"
+        exit 1
+    fi
     USE_BACKUP=true
-elif [ "$FORCE_FULL" = false ] && check_backup_ssd_mounted && check_backup_exists "$ENGINE"; then
+elif [ "$FORCE_FULL" = false ] && [ -n "$RESTORE_BENCHMARK" ] && check_backup_ssd_mounted && check_backup_exists "$ENGINE" "$RESTORE_BENCHMARK"; then
     # Auto-detect: use backup if available and --full not specified
     USE_BACKUP=true
-    log_info "Backup detected for $ENGINE, using restore mode (use --full to force full preparation)"
+    log_info "Backup detected for $ENGINE-$RESTORE_BENCHMARK, using restore mode (use --full to force full preparation)"
 fi
 
 log_info "=========================================="
 log_info "Prepare Benchmark Data"
 log_info "=========================================="
 log_info "Engine: $ENGINE"
-log_info "Mode: $([ "$USE_BACKUP" = true ] && echo "Restore from backup" || echo "Full preparation")"
+log_info "Benchmark: $BENCHMARK"
+if [ "$USE_BACKUP" = true ]; then
+    log_info "Mode: Restore from backup ($ENGINE-$RESTORE_BENCHMARK)"
+else
+    log_info "Mode: Full preparation"
+fi
 log_info "Skip SSD Reset: $SKIP_RESET"
 if [ "$USE_BACKUP" = false ]; then
     log_info "Benchmarks to prepare:"
@@ -267,9 +295,10 @@ if [ "$USE_BACKUP" = true ]; then
     fi
 
     # Verify backup exists
-    if ! check_backup_exists "$ENGINE"; then
-        log_error "No backup found for $ENGINE at ${BACKUP_DIR}/${ENGINE}"
-        log_error "Run backup-data.sh first or use --full for full preparation"
+    if ! check_backup_exists "$ENGINE" "$RESTORE_BENCHMARK"; then
+        log_error "No backup found for $ENGINE-$RESTORE_BENCHMARK at ${BACKUP_DIR}/${ENGINE}-${RESTORE_BENCHMARK}"
+        log_error "Run: ./scripts/backup-data.sh -e $ENGINE -b $RESTORE_BENCHMARK"
+        log_error "Or use --full for full preparation"
         exit 1
     fi
 
@@ -313,7 +342,7 @@ if [ "$USE_BACKUP" = true ]; then
     log_info "=========================================="
     log_info "Restoring data from backup..."
     log_info "=========================================="
-    restore_from_backup "$ENGINE"
+    restore_from_backup "$ENGINE" "$RESTORE_BENCHMARK"
 
 else
     # ========================================
