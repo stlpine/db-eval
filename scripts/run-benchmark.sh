@@ -190,7 +190,6 @@ capture_engine_stats() {
 }
 
 # Helper function: Capture RocksDB statistics (for MyRocks only)
-# Note: SHOW ENGINE ROCKSDB STATUS is already captured in benchmark_config.log
 capture_rocksdb_stats() {
     local result_dir=$1
 
@@ -200,6 +199,9 @@ capture_rocksdb_stats() {
 
     {
         echo "=== RocksDB Metrics (captured at $(date)) ==="
+        echo ""
+        echo "=== Engine Status (SHOW ENGINE ROCKSDB STATUS) ==="
+        mysql --socket="$SOCKET" -e "SHOW ENGINE ROCKSDB STATUS\G" 2>/dev/null
         echo ""
         echo "=== Column Family Statistics (ROCKSDB_CFSTATS) ==="
         mysql --socket="$SOCKET" -e "SELECT * FROM INFORMATION_SCHEMA.ROCKSDB_CFSTATS;" 2>/dev/null
@@ -224,7 +226,6 @@ capture_rocksdb_stats() {
 }
 
 # Helper function: Capture InnoDB statistics
-# Note: SHOW ENGINE INNODB STATUS and SHOW GLOBAL STATUS are already captured in benchmark_config.log
 capture_innodb_stats() {
     local result_dir=$1
 
@@ -234,6 +235,12 @@ capture_innodb_stats() {
 
     {
         echo "=== InnoDB Metrics (captured at $(date)) ==="
+        echo ""
+        echo "=== Engine Status (SHOW ENGINE INNODB STATUS) ==="
+        mysql --socket="$SOCKET" -e "SHOW ENGINE INNODB STATUS\G" 2>/dev/null
+        echo ""
+        echo "=== Global Status ==="
+        mysql --socket="$SOCKET" -e "SHOW GLOBAL STATUS;" 2>/dev/null
         echo ""
         echo "=== Buffer Pool Wait/Stall Metrics ==="
         mysql --socket="$SOCKET" -e "SELECT NAME, COUNT, STATUS FROM INFORMATION_SCHEMA.INNODB_METRICS WHERE NAME IN ('buffer_pool_wait_free', 'buffer_pool_reads', 'buffer_pool_read_requests', 'buffer_pool_write_requests');" 2>/dev/null
