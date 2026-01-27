@@ -201,17 +201,23 @@ capture_rocksdb_stats() {
     {
         echo "=== RocksDB Metrics (captured at $(date)) ==="
         echo ""
-        echo "=== Stall Statistics ==="
-        mysql --socket="$SOCKET" -e "SELECT * FROM INFORMATION_SCHEMA.ROCKSDB_DBSTATS WHERE stat_type LIKE '%stall%';" 2>/dev/null
+        echo "=== Column Family Statistics (ROCKSDB_CFSTATS) ==="
+        mysql --socket="$SOCKET" -e "SELECT * FROM INFORMATION_SCHEMA.ROCKSDB_CFSTATS;" 2>/dev/null
         echo ""
-        echo "=== Compaction Statistics ==="
-        mysql --socket="$SOCKET" -e "SELECT * FROM INFORMATION_SCHEMA.ROCKSDB_DBSTATS WHERE stat_type LIKE '%compact%';" 2>/dev/null
+        echo "=== Compaction Statistics (ROCKSDB_COMPACTION_STATS) ==="
+        mysql --socket="$SOCKET" -e "SELECT * FROM INFORMATION_SCHEMA.ROCKSDB_COMPACTION_STATS;" 2>/dev/null
         echo ""
-        echo "=== Write Statistics ==="
-        mysql --socket="$SOCKET" -e "SELECT * FROM INFORMATION_SCHEMA.ROCKSDB_DBSTATS WHERE stat_type LIKE '%write%';" 2>/dev/null
-        echo ""
-        echo "=== All DB Statistics ==="
+        echo "=== DB Statistics (ROCKSDB_DBSTATS) ==="
         mysql --socket="$SOCKET" -e "SELECT * FROM INFORMATION_SCHEMA.ROCKSDB_DBSTATS;" 2>/dev/null
+        echo ""
+        echo "=== Performance Context (ROCKSDB_PERF_CONTEXT) ==="
+        mysql --socket="$SOCKET" -e "SELECT * FROM INFORMATION_SCHEMA.ROCKSDB_PERF_CONTEXT;" 2>/dev/null
+        echo ""
+        echo "=== Global Info (ROCKSDB_GLOBAL_INFO) ==="
+        mysql --socket="$SOCKET" -e "SELECT * FROM INFORMATION_SCHEMA.ROCKSDB_GLOBAL_INFO;" 2>/dev/null
+        echo ""
+        echo "=== SST File Info (ROCKSDB_INDEX_FILE_MAP) ==="
+        mysql --socket="$SOCKET" -e "SELECT CF_NAME, COUNT(*) as sst_count, SUM(NUM_ENTRIES) as total_entries FROM INFORMATION_SCHEMA.ROCKSDB_INDEX_FILE_MAP GROUP BY CF_NAME;" 2>/dev/null
     } > "$stats_file"
 
     log_info "RocksDB metrics saved to: $stats_file"
