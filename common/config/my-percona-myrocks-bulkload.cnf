@@ -42,12 +42,24 @@ general_log = 0
 performance_schema = OFF
 
 # ============================================
-# WRITE PATH (normal path, NOT bulk_load)
+# WRITE PATH (bulk_load enabled by default)
 # ============================================
 
-# OFF: tpcc_load interleaves multi-table inserts, which causes millions
-# of tiny SST ingestions under bulk_load mode.
-rocksdb_bulk_load = 0
+# ON by default: bulk_load writes directly to bottommost SST files, skipping
+# MemTable and compactions. This is much faster for data loading.
+#
+# Safe for:
+#   - sysbench: each thread handles tables sequentially, no interleaving
+#   - sysbench-tpcc: also processes tables sequentially, and bulk_load
+#     bypasses gap lock detection for its INSERT...SELECT pattern
+#
+# NOT safe for tpcc-mysql (C loader): tpcc_load interleaves inserts across
+# ORDER, NEW_ORDER, and ORDER_LINE tables per order. With bulk_load=1, each
+# table switch triggers SST file creation and ingestion, producing ~60M tiny
+# SST files for 2000 warehouses. The tpcc/prepare.sh script disables bulk_load
+# at session level before running tpcc_load.
+rocksdb_bulk_load = 1
+rocksdb_bulk_load_allow_unsorted = 1
 
 # Commit every rocksdb_bulk_load_size rows to bound transaction memory.
 # Without this or bulk_load, all modifications stay in memory -> OOM.
