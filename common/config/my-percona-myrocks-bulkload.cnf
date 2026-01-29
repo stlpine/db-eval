@@ -40,8 +40,10 @@ rocksdb_bulk_load = 1
 # Allow bulk load to work with unsorted input
 rocksdb_bulk_load_allow_unsorted = 1
 
-# Commit large transactions in chunks to avoid memory issues
-rocksdb_commit_in_the_middle = 1
+# Do NOT enable rocksdb_commit_in_the_middle here.
+# It causes partial commits on connection failure, and combined with
+# rocksdb_bulk_load (which skips uniqueness checks), tpcc_load retries
+# would silently create duplicate rows.
 
 # Total write buffer memory limit across all column families (2GB)
 rocksdb_db_write_buffer_size = 2G

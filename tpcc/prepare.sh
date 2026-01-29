@@ -118,7 +118,13 @@ mkdir -p "$LOG_DIR"
 # -l 2: WAREHOUSE, STOCK, DISTRICT
 # -l 3: CUSTOMER, HISTORY
 # -l 4: ORDERS, NEW_ORDER, ORDER_LINE
-STEP=500  # Warehouses per chunk (4 chunks × 3 table groups = 12 processes + 1 for ITEM = 13 total)
+# RocksDB bulk_load serializes SST ingestion, so excessive parallelism
+# causes write stalls and connection drops. Use larger chunks for MyRocks.
+if [ "$STORAGE_ENGINE" = "ROCKSDB" ]; then
+    STEP=2000  # 1 chunk × 3 table groups = 3 processes + 1 for ITEM = 4 total
+else
+    STEP=500   # 4 chunks × 3 table groups = 12 processes + 1 for ITEM = 13 total
+fi
 
 log_info "Loading ITEM table (table group 1)..."
 "$TPCC_DIR/tpcc_load" \
@@ -130,7 +136,7 @@ log_info "Loading ITEM table (table group 1)..."
     -l 1 \
     -m 1 \
     -n "$TPCC_WAREHOUSES" \
-    >> "$LOG_DIR/load_1.log" 2>&1 &
+    >> "$LOG_DIR/load_1.log" 2>> "$LOG_DIR/load_1_err.log" &
 PIDS=($!)
 
 log_info "Loading warehouse data in parallel (table groups 2, 3, 4)..."
@@ -157,7 +163,7 @@ while [ $x -le "$TPCC_WAREHOUSES" ]; do
         -l 2 \
         -m $x \
         -n $END_WH \
-        >> "$LOG_DIR/load_2_${x}.log" 2>&1 &
+        >> "$LOG_DIR/load_2_${x}.log" 2>> "$LOG_DIR/load_2_${x}_err.log" &
     PIDS+=($!)
 
     # Table group 3: CUSTOMER, HISTORY
@@ -170,7 +176,7 @@ while [ $x -le "$TPCC_WAREHOUSES" ]; do
         -l 3 \
         -m $x \
         -n $END_WH \
-        >> "$LOG_DIR/load_3_${x}.log" 2>&1 &
+        >> "$LOG_DIR/load_3_${x}.log" 2>> "$LOG_DIR/load_3_${x}_err.log" &
     PIDS+=($!)
 
     # Table group 4: ORDERS, NEW_ORDER, ORDER_LINE
@@ -183,7 +189,7 @@ while [ $x -le "$TPCC_WAREHOUSES" ]; do
         -l 4 \
         -m $x \
         -n $END_WH \
-        >> "$LOG_DIR/load_4_${x}.log" 2>&1 &
+        >> "$LOG_DIR/load_4_${x}.log" 2>> "$LOG_DIR/load_4_${x}_err.log" &
     PIDS+=($!)
 
     x=$((x + STEP))
