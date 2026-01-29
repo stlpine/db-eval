@@ -230,7 +230,7 @@ capture_data_profile() {
         echo "============================================================"
         echo "DATABASE SUMMARY"
         echo "============================================================"
-        mysql --socket="$SOCKET" -e "
+        timeout 60 mysql --socket="$SOCKET" -e "
             SELECT
                 COUNT(*) AS total_tables,
                 SUM(TABLE_ROWS) AS total_rows,
@@ -239,13 +239,13 @@ capture_data_profile() {
                 ROUND((SUM(DATA_LENGTH) + SUM(INDEX_LENGTH)) / 1024 / 1024, 2) AS total_size_mb,
                 ROUND((SUM(DATA_LENGTH) + SUM(INDEX_LENGTH)) / 1024 / 1024 / 1024, 2) AS total_size_gb
             FROM information_schema.TABLES
-            WHERE TABLE_SCHEMA = '${BENCHMARK_DB}';" 2>/dev/null
+            WHERE TABLE_SCHEMA = '${BENCHMARK_DB}';" 2>/dev/null || echo "(query timed out after 60s)"
         echo ""
 
         echo "============================================================"
         echo "TABLE DETAILS"
         echo "============================================================"
-        mysql --socket="$SOCKET" -e "
+        timeout 60 mysql --socket="$SOCKET" -e "
             SELECT
                 TABLE_NAME,
                 ENGINE,
@@ -256,13 +256,13 @@ capture_data_profile() {
                 ROUND((DATA_LENGTH + INDEX_LENGTH) / 1024 / 1024, 2) AS total_mb
             FROM information_schema.TABLES
             WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
-            ORDER BY (DATA_LENGTH + INDEX_LENGTH) DESC;" 2>/dev/null
+            ORDER BY (DATA_LENGTH + INDEX_LENGTH) DESC;" 2>/dev/null || echo "(query timed out after 60s)"
         echo ""
 
         echo "============================================================"
         echo "INDEX DETAILS"
         echo "============================================================"
-        mysql --socket="$SOCKET" -e "
+        timeout 60 mysql --socket="$SOCKET" -e "
             SELECT
                 TABLE_NAME,
                 INDEX_NAME,
@@ -273,13 +273,13 @@ capture_data_profile() {
                 INDEX_TYPE
             FROM information_schema.STATISTICS
             WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
-            ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX;" 2>/dev/null
+            ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX;" 2>/dev/null || echo "(query timed out after 60s)"
         echo ""
 
         echo "============================================================"
         echo "INDEX SIZE BREAKDOWN (per table)"
         echo "============================================================"
-        mysql --socket="$SOCKET" -e "
+        timeout 60 mysql --socket="$SOCKET" -e "
             SELECT
                 t.TABLE_NAME,
                 t.ENGINE,
@@ -292,13 +292,13 @@ capture_data_profile() {
                 ON t.TABLE_SCHEMA = s.TABLE_SCHEMA AND t.TABLE_NAME = s.TABLE_NAME
             WHERE t.TABLE_SCHEMA = '${BENCHMARK_DB}'
             GROUP BY t.TABLE_NAME, t.ENGINE, t.INDEX_LENGTH, t.DATA_LENGTH
-            ORDER BY t.INDEX_LENGTH DESC;" 2>/dev/null
+            ORDER BY t.INDEX_LENGTH DESC;" 2>/dev/null || echo "(query timed out after 60s)"
         echo ""
 
         echo "============================================================"
         echo "COLUMN STATISTICS (sample tables)"
         echo "============================================================"
-        mysql --socket="$SOCKET" -e "
+        timeout 60 mysql --socket="$SOCKET" -e "
             SELECT
                 TABLE_NAME,
                 COLUMN_NAME,
@@ -309,20 +309,20 @@ capture_data_profile() {
             FROM information_schema.COLUMNS
             WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
             ORDER BY TABLE_NAME, ORDINAL_POSITION
-            LIMIT 100;" 2>/dev/null
+            LIMIT 100;" 2>/dev/null || echo "(query timed out after 60s)"
         echo ""
 
         echo "============================================================"
         echo "DATA DISTRIBUTION (row counts by table)"
         echo "============================================================"
-        mysql --socket="$SOCKET" -e "
+        timeout 60 mysql --socket="$SOCKET" -e "
             SELECT
                 TABLE_NAME,
                 TABLE_ROWS,
                 ROUND(TABLE_ROWS * 100.0 / SUM(TABLE_ROWS) OVER(), 2) AS pct_of_total
             FROM information_schema.TABLES
             WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
-            ORDER BY TABLE_ROWS DESC;" 2>/dev/null
+            ORDER BY TABLE_ROWS DESC;" 2>/dev/null || echo "(query timed out after 60s)"
         echo ""
 
         echo "============================================================"
@@ -330,24 +330,24 @@ capture_data_profile() {
         echo "============================================================"
         if [ "$ENGINE" = "percona-myrocks" ]; then
             echo "--- RocksDB Column Family Stats ---"
-            mysql --socket="$SOCKET" -e "
+            timeout 60 mysql --socket="$SOCKET" -e "
                 SELECT CF_NAME, STAT_TYPE, VALUE
                 FROM INFORMATION_SCHEMA.ROCKSDB_CFSTATS
                 WHERE STAT_TYPE IN ('num_entries', 'num_deletes', 'total_sst_files_size', 'num_live_versions')
-                ORDER BY CF_NAME, STAT_TYPE;" 2>/dev/null
+                ORDER BY CF_NAME, STAT_TYPE;" 2>/dev/null || echo "(query timed out after 60s)"
             echo ""
             echo "--- RocksDB SST Files Summary ---"
-            mysql --socket="$SOCKET" -e "
+            timeout 60 mysql --socket="$SOCKET" -e "
                 SELECT
                     CF_NAME,
                     COUNT(*) AS sst_file_count,
                     SUM(NUM_ENTRIES) AS total_entries,
                     SUM(NUM_DELETIONS) AS total_deletions
                 FROM INFORMATION_SCHEMA.ROCKSDB_INDEX_FILE_MAP
-                GROUP BY CF_NAME;" 2>/dev/null
+                GROUP BY CF_NAME;" 2>/dev/null || echo "(query timed out after 60s)"
         else
             echo "--- InnoDB Buffer Pool Stats ---"
-            mysql --socket="$SOCKET" -e "
+            timeout 60 mysql --socket="$SOCKET" -e "
                 SELECT
                     POOL_ID,
                     POOL_SIZE,
@@ -355,10 +355,10 @@ capture_data_profile() {
                     DATABASE_PAGES,
                     PAGES_MADE_YOUNG,
                     PAGES_NOT_MADE_YOUNG
-                FROM INFORMATION_SCHEMA.INNODB_BUFFER_POOL_STATS;" 2>/dev/null
+                FROM INFORMATION_SCHEMA.INNODB_BUFFER_POOL_STATS;" 2>/dev/null || echo "(query timed out after 60s)"
             echo ""
             echo "--- InnoDB Tablespace Info ---"
-            mysql --socket="$SOCKET" -e "
+            timeout 60 mysql --socket="$SOCKET" -e "
                 SELECT
                     NAME,
                     FILE_SIZE / 1024 / 1024 AS file_size_mb,
@@ -366,7 +366,7 @@ capture_data_profile() {
                 FROM INFORMATION_SCHEMA.INNODB_TABLESPACES
                 WHERE NAME LIKE '${BENCHMARK_DB}/%'
                 ORDER BY FILE_SIZE DESC
-                LIMIT 20;" 2>/dev/null
+                LIMIT 20;" 2>/dev/null || echo "(query timed out after 60s)"
         fi
         echo ""
 
@@ -403,7 +403,7 @@ capture_data_profile() {
     # Also generate a CSV summary for easy parsing
     {
         echo "table_name,engine,rows,avg_row_bytes,data_mb,index_mb,total_mb"
-        mysql --socket="$SOCKET" -N -e "
+        timeout 60 mysql --socket="$SOCKET" -N -e "
             SELECT
                 TABLE_NAME,
                 ENGINE,
@@ -414,7 +414,7 @@ capture_data_profile() {
                 ROUND((DATA_LENGTH + INDEX_LENGTH) / 1024 / 1024, 2)
             FROM information_schema.TABLES
             WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
-            ORDER BY (DATA_LENGTH + INDEX_LENGTH) DESC;" 2>/dev/null | tr '\t' ','
+            ORDER BY (DATA_LENGTH + INDEX_LENGTH) DESC;" 2>/dev/null | tr '\t' ',' || echo "(query timed out after 60s)"
     } > "$profile_csv" 2>&1
 
     log_info "Data profile saved to: $profile_file"
