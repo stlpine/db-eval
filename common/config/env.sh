@@ -2,11 +2,16 @@
 # Common environment configuration for MySQL benchmarking
 
 # Ensure proper terminal line discipline for subprocess output
-# This is critical when running under sudo where terminal settings may not propagate properly
+# This is critical when running under sudo/cgexec where terminal settings may not propagate properly
 # Note: opost must be enabled for onlcr to take effect
-if [ -t 1 ]; then
+if [ -t 1 ] || [ -t 0 ]; then
     stty opost onlcr 2>/dev/null || true
 fi
+
+# Force line buffering and proper newline handling for piped/redirected output
+export PYTHONUNBUFFERED=1
+# Ensure awk/sed output proper line endings
+export LC_ALL=C.UTF-8 2>/dev/null || export LC_ALL=C
 
 # MySQL Configuration
 export MYSQL_VERSION="8.4.7"
