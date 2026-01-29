@@ -20,12 +20,15 @@ ENGINE=$1
 case $ENGINE in
     vanilla-innodb)
         SOCKET="${MYSQL_SOCKET_VANILLA_INNODB}"
+        STORAGE_ENGINE="innodb"
         ;;
     percona-innodb)
         SOCKET="${MYSQL_SOCKET_PERCONA_INNODB}"
+        STORAGE_ENGINE="innodb"
         ;;
     percona-myrocks)
         SOCKET="${MYSQL_SOCKET_PERCONA_MYROCKS}"
+        STORAGE_ENGINE="rocksdb"
         ;;
     *)
         log_error "Unknown engine: $ENGINE"
@@ -94,6 +97,7 @@ sysbench ./tpcc.lua \
     --scale="$SYSBENCH_TPCC_SCALE" \
     --threads="$SYSBENCH_TPCC_TABLES" \
     --use_fk="$SYSBENCH_TPCC_USE_FK" \
+    --mysql_storage_engine="$STORAGE_ENGINE" \
     --db-driver=mysql \
     prepare
 

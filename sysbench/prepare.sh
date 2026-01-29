@@ -20,12 +20,15 @@ ENGINE=$1
 case $ENGINE in
     vanilla-innodb)
         SOCKET="${MYSQL_SOCKET_VANILLA_INNODB}"
+        STORAGE_ENGINE="innodb"
         ;;
     percona-innodb)
         SOCKET="${MYSQL_SOCKET_PERCONA_INNODB}"
+        STORAGE_ENGINE="innodb"
         ;;
     percona-myrocks)
         SOCKET="${MYSQL_SOCKET_PERCONA_MYROCKS}"
+        STORAGE_ENGINE="rocksdb"
         ;;
     *)
         log_error "Unknown engine: $ENGINE"
@@ -63,6 +66,7 @@ sysbench oltp_common \
     --mysql-db="$BENCHMARK_DB" \
     --tables="$SYSBENCH_TABLES" \
     --table-size="$SYSBENCH_TABLE_SIZE" \
+    --mysql-table-engine="$STORAGE_ENGINE" \
     prepare || {
     log_error "Sysbench prepare failed"
     exit 1

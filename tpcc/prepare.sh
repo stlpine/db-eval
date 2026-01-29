@@ -87,9 +87,8 @@ mysql --socket="$SOCKET" -e "CREATE DATABASE $BENCHMARK_DB;"
 log_info "Creating TPC-C tables for $STORAGE_ENGINE..."
 cd "$TPCC_DIR"
 
-# Modify create_table.sql to use specified storage engine
-sed "s/ENGINE=InnoDB/ENGINE=$STORAGE_ENGINE/g" create_table.sql > /tmp/create_table_${ENGINE}.sql
-sed -i "s/ENGINE=INNODB/ENGINE=$STORAGE_ENGINE/g" /tmp/create_table_${ENGINE}.sql
+# Modify create_table.sql to use specified storage engine (case-insensitive)
+sed "s/Engine=InnoDB/ENGINE=$STORAGE_ENGINE/gI" create_table.sql > /tmp/create_table_${ENGINE}.sql
 
 mysql --socket="$SOCKET" "$BENCHMARK_DB" < /tmp/create_table_${ENGINE}.sql
 mysql --socket="$SOCKET" "$BENCHMARK_DB" < "${SCRIPT_DIR}/add_idx_only.sql"

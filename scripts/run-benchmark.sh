@@ -148,6 +148,39 @@ case $ENGINE in
         ;;
 esac
 
+# Helper function: Verify tables use the expected storage engine
+verify_storage_engine() {
+    local expected_engine
+    case $ENGINE in
+        percona-myrocks)
+            expected_engine="ROCKSDB"
+            ;;
+        *)
+            expected_engine="InnoDB"
+            ;;
+    esac
+
+    local wrong_tables
+    wrong_tables=$(mysql --socket="$SOCKET" -N -e "
+        SELECT TABLE_NAME, ENGINE
+        FROM information_schema.TABLES
+        WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
+          AND ENGINE != '${expected_engine}';" 2>/dev/null)
+
+    if [ -n "$wrong_tables" ]; then
+        log_error "Storage engine mismatch! Expected $expected_engine for engine=$ENGINE"
+        log_error "Tables using wrong engine:"
+        echo "$wrong_tables" | while read -r table engine; do
+            log_error "  $table: $engine"
+        done
+        log_error "Re-run prepare-data.sh with the correct engine."
+        stop_mysql
+        exit 1
+    fi
+
+    log_info "Storage engine verified: all tables use $expected_engine"
+}
+
 # Helper function: Drop OS page cache
 drop_page_cache() {
     log_info "Dropping OS page cache..."
@@ -179,8 +212,7 @@ stop_mysql() {
 
 # Helper function: Capture engine statistics
 capture_engine_stats() {
-    local benchmark_type=$1
-    local result_dir=$2
+    local result_dir=$1
 
     if [ "$ENGINE" = "percona-myrocks" ]; then
         capture_rocksdb_stats "$result_dir"
@@ -278,12 +310,14 @@ if [ "$RUN_SYSBENCH" = true ]; then
         exit 1
     fi
 
+    verify_storage_engine
+
     "${SCRIPT_DIR}/../sysbench/run.sh" "$ENGINE"
 
     LATEST_RESULT=$(ls -td "${RESULTS_DIR}/sysbench/${ENGINE}"/* 2>/dev/null | head -1)
     log_info "Sysbench results: $LATEST_RESULT"
 
-    capture_engine_stats "sysbench" "$LATEST_RESULT"
+    capture_engine_stats "$LATEST_RESULT"
     stop_mysql
 fi
 
@@ -301,12 +335,14 @@ if [ "$RUN_TPCC" = true ]; then
         exit 1
     fi
 
+    verify_storage_engine
+
     "${SCRIPT_DIR}/../tpcc/run.sh" "$ENGINE"
 
     LATEST_RESULT=$(ls -td "${RESULTS_DIR}/tpcc/${ENGINE}"/* 2>/dev/null | head -1)
     log_info "TPC-C results: $LATEST_RESULT"
 
-    capture_engine_stats "tpcc" "$LATEST_RESULT"
+    capture_engine_stats "$LATEST_RESULT"
     stop_mysql
 fi
 
@@ -324,12 +360,14 @@ if [ "$RUN_SYSBENCH_TPCC" = true ]; then
         exit 1
     fi
 
+    verify_storage_engine
+
     "${SCRIPT_DIR}/../sysbench-tpcc/run.sh" "$ENGINE"
 
     LATEST_RESULT=$(ls -td "${RESULTS_DIR}/sysbench-tpcc/${ENGINE}"/* 2>/dev/null | head -1)
     log_info "Sysbench-TPCC results: $LATEST_RESULT"
 
-    capture_engine_stats "sysbench-tpcc" "$LATEST_RESULT"
+    capture_engine_stats "$LATEST_RESULT"
     stop_mysql
 fi
 
