@@ -1,7 +1,19 @@
 [mysqld]
 # Percona Server 8.4 with MyRocks - BULK LOAD CONFIGURATION
-# WARNING: These settings prioritize speed over durability
-# Use only for data preparation, not for benchmarking or production
+# Tuned for: 24 CPU cores, 64GB RAM, 1.9TB NVMe SSD
+#
+# WARNING: These settings prioritize speed over durability.
+# Use only for data preparation, not for benchmarking or production.
+#
+# Strategy: Normal write path (memtable -> flush -> compaction) with
+# rocksdb_commit_in_the_middle to bound transaction memory.
+#
+# Why NOT rocksdb_bulk_load: tpcc_load interleaves inserts across ORDER,
+# NEW_ORDER, and ORDER_LINE tables per order. With bulk_load=1, each
+# table switch triggers SST file creation and ingestion. This produces
+# ~60M tiny SST ingestions for 2000 warehouses, stalling the server and
+# dropping client connections (error 2013).
+# See: https://docs.percona.com/percona-server/8.0/data-loading.html
 user = mysql
 port = 3306
 socket = /tmp/mysql_percona_myrocks.sock
@@ -30,51 +42,90 @@ general_log = 0
 performance_schema = OFF
 
 # ============================================
-# BULK LOAD OPTIMIZATIONS (RocksDB-specific)
+# WRITE PATH (normal path, NOT bulk_load)
 # ============================================
 
-# DANGEROUS: Enable RocksDB bulk load mode
-# This bypasses compaction and uniqueness checks for maximum speed
-rocksdb_bulk_load = 1
+# OFF: tpcc_load interleaves multi-table inserts, which causes millions
+# of tiny SST ingestions under bulk_load mode.
+rocksdb_bulk_load = 0
 
-# Allow bulk load to work with unsorted input
-rocksdb_bulk_load_allow_unsorted = 1
+# Commit every rocksdb_bulk_load_size rows to bound transaction memory.
+# Without this or bulk_load, all modifications stay in memory -> OOM.
+rocksdb_commit_in_the_middle = 1
+rocksdb_bulk_load_size = 5000
 
-# Do NOT enable rocksdb_commit_in_the_middle here.
-# It causes partial commits on connection failure, and combined with
-# rocksdb_bulk_load (which skips uniqueness checks), tpcc_load retries
-# would silently create duplicate rows.
+# ============================================
+# WRITE BUFFERS
+# ============================================
 
-# Total write buffer memory limit across all column families (2GB)
-rocksdb_db_write_buffer_size = 2G
+# Total write buffer across all column families (~6% of 64GB).
+# Larger = fewer flushes = less write stall risk during heavy inserts.
+rocksdb_db_write_buffer_size = 4G
 
-# Per-column family options: write_buffer_size and max_write_buffer_number
-# Disable compression for fair architectural comparison
-rocksdb_default_cf_options = write_buffer_size=256m;max_write_buffer_number=8;compression=kNoCompression
+# Per-CF: 512MB buffers, up to 8 before stalling foreground writes.
+# Gives 4GB per CF before write stall, matching the global limit.
+# No compression for fair architectural comparison with InnoDB.
+rocksdb_default_cf_options = write_buffer_size=512m;max_write_buffer_number=8;compression=kNoCompression
 
-# Enable concurrent memtable writes for better multi-core performance
+# ============================================
+# CONCURRENCY (tuned for 24 cores)
+# ============================================
+
+# Parallel memtable writes from multiple loader processes
 rocksdb_allow_concurrent_memtable_write = ON
 
-# Unlimited open files (avoid open/close overhead)
+# Write batch leader yields before blocking, reducing mutex contention
+rocksdb_enable_write_thread_adaptive_yield = ON
+
+# 12 of 24 cores for background flush/compaction.
+# Leaves 12 cores for foreground loader threads.
+rocksdb_max_background_jobs = 12
+
+# Parallelize large compactions into sub-tasks
+rocksdb_max_subcompactions = 4
+
+# ============================================
+# I/O
+# ============================================
+
+# Keep all SST file handles open (avoid open/close overhead)
 rocksdb_max_open_files = -1
 
-# More background jobs for compaction/flush
-rocksdb_max_background_jobs = 8
+# No rate limiting during data load
+rocksdb_rate_limiter_bytes_per_sec = 0
 
-# Disable WAL sync for speed (DANGEROUS)
+# Async data sync every 4MB (avoid large burst syncs)
+rocksdb_bytes_per_sync = 4194304
+rocksdb_wal_bytes_per_sync = 4194304
+
+# Block cache minimal during load (no read workload)
+rocksdb_block_cache_size = 512M
+
+# ============================================
+# DURABILITY (all relaxed for load speed)
+# ============================================
+
+# No WAL sync per commit
 rocksdb_flush_log_at_trx_commit = 0
 
-# DANGEROUS: Disable binary log sync
+# No binlog sync per commit
 sync_binlog = 0
 
-# Increase max connections for parallel loaders
+# ============================================
+# CONNECTIONS / TIMEOUTS
+# ============================================
+
 max_connections = 200
 
-# Increase timeouts for bulk load (RocksDB can stall during SST ingestion)
-net_read_timeout = 600
-net_write_timeout = 600
+net_read_timeout = 3600
+net_write_timeout = 3600
+wait_timeout = 28800
+interactive_timeout = 28800
 
-# Increase sort buffer for index creation
+# ============================================
+# BUFFERS
+# ============================================
+
 sort_buffer_size = 64M
 read_buffer_size = 16M
 
