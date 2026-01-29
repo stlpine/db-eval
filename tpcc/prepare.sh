@@ -113,102 +113,132 @@ LOG_DIR="${SCRIPT_DIR}/load_logs_${ENGINE}"
 rm -rf "$LOG_DIR"
 mkdir -p "$LOG_DIR"
 
-# Parallel loading configuration
+# Loading configuration
 # -l 1: ITEM table (only needs to run once, not per-warehouse)
 # -l 2: WAREHOUSE, STOCK, DISTRICT
 # -l 3: CUSTOMER, HISTORY
 # -l 4: ORDERS, NEW_ORDER, ORDER_LINE
-# RocksDB bulk_load serializes SST ingestion, so excessive parallelism
-# causes write stalls and connection drops. Use larger chunks for MyRocks.
+#
+# RocksDB bulk_load serializes SST ingestion, so parallel writers compete
+# for the same write path causing stalls and connection drops.
+# Load sequentially for RocksDB, in parallel for InnoDB.
 if [ "$STORAGE_ENGINE" = "ROCKSDB" ]; then
-    STEP=2000  # 1 chunk × 3 table groups = 3 processes + 1 for ITEM = 4 total
+    log_info "Loading sequentially (RocksDB bulk load mode)..."
+    log_info "  Total warehouses: $TPCC_WAREHOUSES"
+
+    for group in 1 2 3 4; do
+        case $group in
+            1) log_info "Loading table group 1: ITEM..." ;;
+            2) log_info "Loading table group 2: WAREHOUSE, STOCK, DISTRICT..." ;;
+            3) log_info "Loading table group 3: CUSTOMER, HISTORY..." ;;
+            4) log_info "Loading table group 4: ORDERS, NEW_ORDER, ORDER_LINE..." ;;
+        esac
+
+        "$TPCC_DIR/tpcc_load" \
+            -h localhost \
+            -d "$BENCHMARK_DB" \
+            -u root \
+            -p "" \
+            -w "$TPCC_WAREHOUSES" \
+            -l $group \
+            -m 1 \
+            -n "$TPCC_WAREHOUSES" \
+            >> "$LOG_DIR/load_${group}.log" 2>> "$LOG_DIR/load_${group}_err.log"
+
+        if [ $? -ne 0 ]; then
+            log_error "Table group $group failed. Check $LOG_DIR/load_${group}_err.log"
+            exit 1
+        fi
+
+        log_info "  Table group $group complete"
+    done
 else
-    STEP=500   # 4 chunks × 3 table groups = 12 processes + 1 for ITEM = 13 total
-fi
+    STEP=500  # 4 chunks × 3 table groups = 12 processes + 1 for ITEM = 13 total
 
-log_info "Loading ITEM table (table group 1)..."
-"$TPCC_DIR/tpcc_load" \
-    -h localhost \
-    -d "$BENCHMARK_DB" \
-    -u root \
-    -p "" \
-    -w "$TPCC_WAREHOUSES" \
-    -l 1 \
-    -m 1 \
-    -n "$TPCC_WAREHOUSES" \
-    >> "$LOG_DIR/load_1.log" 2>> "$LOG_DIR/load_1_err.log" &
-PIDS=($!)
+    log_info "Loading ITEM table (table group 1)..."
+    "$TPCC_DIR/tpcc_load" \
+        -h localhost \
+        -d "$BENCHMARK_DB" \
+        -u root \
+        -p "" \
+        -w "$TPCC_WAREHOUSES" \
+        -l 1 \
+        -m 1 \
+        -n "$TPCC_WAREHOUSES" \
+        >> "$LOG_DIR/load_1.log" 2>> "$LOG_DIR/load_1_err.log" &
+    PIDS=($!)
 
-log_info "Loading warehouse data in parallel (table groups 2, 3, 4)..."
-log_info "  Chunk size: $STEP warehouses"
-log_info "  Total warehouses: $TPCC_WAREHOUSES"
+    log_info "Loading warehouse data in parallel (table groups 2, 3, 4)..."
+    log_info "  Chunk size: $STEP warehouses"
+    log_info "  Total warehouses: $TPCC_WAREHOUSES"
 
-# Spawn parallel processes for each warehouse range and table group
-x=1
-while [ $x -le "$TPCC_WAREHOUSES" ]; do
-    END_WH=$((x + STEP - 1))
-    if [ $END_WH -gt "$TPCC_WAREHOUSES" ]; then
-        END_WH=$TPCC_WAREHOUSES
+    # Spawn parallel processes for each warehouse range and table group
+    x=1
+    while [ $x -le "$TPCC_WAREHOUSES" ]; do
+        END_WH=$((x + STEP - 1))
+        if [ $END_WH -gt "$TPCC_WAREHOUSES" ]; then
+            END_WH=$TPCC_WAREHOUSES
+        fi
+
+        log_info "  Spawning loaders for warehouses $x to $END_WH..."
+
+        # Table group 2: WAREHOUSE, STOCK, DISTRICT
+        "$TPCC_DIR/tpcc_load" \
+            -h localhost \
+            -d "$BENCHMARK_DB" \
+            -u root \
+            -p "" \
+            -w "$TPCC_WAREHOUSES" \
+            -l 2 \
+            -m $x \
+            -n $END_WH \
+            >> "$LOG_DIR/load_2_${x}.log" 2>> "$LOG_DIR/load_2_${x}_err.log" &
+        PIDS+=($!)
+
+        # Table group 3: CUSTOMER, HISTORY
+        "$TPCC_DIR/tpcc_load" \
+            -h localhost \
+            -d "$BENCHMARK_DB" \
+            -u root \
+            -p "" \
+            -w "$TPCC_WAREHOUSES" \
+            -l 3 \
+            -m $x \
+            -n $END_WH \
+            >> "$LOG_DIR/load_3_${x}.log" 2>> "$LOG_DIR/load_3_${x}_err.log" &
+        PIDS+=($!)
+
+        # Table group 4: ORDERS, NEW_ORDER, ORDER_LINE
+        "$TPCC_DIR/tpcc_load" \
+            -h localhost \
+            -d "$BENCHMARK_DB" \
+            -u root \
+            -p "" \
+            -w "$TPCC_WAREHOUSES" \
+            -l 4 \
+            -m $x \
+            -n $END_WH \
+            >> "$LOG_DIR/load_4_${x}.log" 2>> "$LOG_DIR/load_4_${x}_err.log" &
+        PIDS+=($!)
+
+        x=$((x + STEP))
+    done
+
+    log_info "Spawned ${#PIDS[@]} parallel loader processes"
+    log_info "Waiting for all loaders to complete..."
+
+    # Wait for all processes and track failures
+    FAILED=0
+    for pid in "${PIDS[@]}"; do
+        if ! wait "$pid"; then
+            FAILED=$((FAILED + 1))
+        fi
+    done
+
+    if [ $FAILED -gt 0 ]; then
+        log_error "$FAILED loader processes failed. Check logs in $LOG_DIR"
+        exit 1
     fi
-
-    log_info "  Spawning loaders for warehouses $x to $END_WH..."
-
-    # Table group 2: WAREHOUSE, STOCK, DISTRICT
-    "$TPCC_DIR/tpcc_load" \
-        -h localhost \
-        -d "$BENCHMARK_DB" \
-        -u root \
-        -p "" \
-        -w "$TPCC_WAREHOUSES" \
-        -l 2 \
-        -m $x \
-        -n $END_WH \
-        >> "$LOG_DIR/load_2_${x}.log" 2>> "$LOG_DIR/load_2_${x}_err.log" &
-    PIDS+=($!)
-
-    # Table group 3: CUSTOMER, HISTORY
-    "$TPCC_DIR/tpcc_load" \
-        -h localhost \
-        -d "$BENCHMARK_DB" \
-        -u root \
-        -p "" \
-        -w "$TPCC_WAREHOUSES" \
-        -l 3 \
-        -m $x \
-        -n $END_WH \
-        >> "$LOG_DIR/load_3_${x}.log" 2>> "$LOG_DIR/load_3_${x}_err.log" &
-    PIDS+=($!)
-
-    # Table group 4: ORDERS, NEW_ORDER, ORDER_LINE
-    "$TPCC_DIR/tpcc_load" \
-        -h localhost \
-        -d "$BENCHMARK_DB" \
-        -u root \
-        -p "" \
-        -w "$TPCC_WAREHOUSES" \
-        -l 4 \
-        -m $x \
-        -n $END_WH \
-        >> "$LOG_DIR/load_4_${x}.log" 2>> "$LOG_DIR/load_4_${x}_err.log" &
-    PIDS+=($!)
-
-    x=$((x + STEP))
-done
-
-log_info "Spawned ${#PIDS[@]} parallel loader processes"
-log_info "Waiting for all loaders to complete..."
-
-# Wait for all processes and track failures
-FAILED=0
-for pid in "${PIDS[@]}"; do
-    if ! wait "$pid"; then
-        FAILED=$((FAILED + 1))
-    fi
-done
-
-if [ $FAILED -gt 0 ]; then
-    log_error "$FAILED loader processes failed. Check logs in $LOG_DIR"
-    exit 1
 fi
 
 END_TIME=$(date +%s)

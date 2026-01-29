@@ -61,10 +61,6 @@ rocksdb_max_open_files = -1
 # More background jobs for compaction/flush
 rocksdb_max_background_jobs = 8
 
-# Increase block cache (similar to buffer pool)
-# System has ~63GB RAM, allocate ~48GB for block cache during bulk load
-rocksdb_block_cache_size = 48G
-
 # Disable WAL sync for speed (DANGEROUS)
 rocksdb_flush_log_at_trx_commit = 0
 
@@ -73,6 +69,10 @@ sync_binlog = 0
 
 # Increase max connections for parallel loaders
 max_connections = 200
+
+# Increase timeouts for bulk load (RocksDB can stall during SST ingestion)
+net_read_timeout = 600
+net_write_timeout = 600
 
 # Increase sort buffer for index creation
 sort_buffer_size = 64M
