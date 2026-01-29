@@ -68,7 +68,7 @@ export BENCHMARK_DURATION="300"  # seconds
 export BENCHMARK_WARMUP="60"     # seconds
 
 # Sysbench Configuration
-export SYSBENCH_TABLE_SIZE="10000000"  # 10M rows per table
+export SYSBENCH_TABLE_SIZE="50000000"  # 50M rows per table
 export SYSBENCH_TABLES="10"
 export SYSBENCH_WORKLOADS="oltp_read_write oltp_read_only oltp_write_only"
 
