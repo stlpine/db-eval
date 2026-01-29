@@ -92,6 +92,7 @@ run_benchmark() {
         --scale="$SYSBENCH_TPCC_SCALE" \
         --time="$SYSBENCH_TPCC_DURATION" \
         --report-interval="$SYSBENCH_TPCC_REPORT_INTERVAL" \
+        --trx_level=RC \
         --db-driver=mysql \
         run) > "$result_file" 2>&1
 

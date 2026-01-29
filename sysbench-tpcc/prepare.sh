@@ -98,6 +98,7 @@ sysbench ./tpcc.lua \
     --threads="$SYSBENCH_TPCC_TABLES" \
     --use_fk="$SYSBENCH_TPCC_USE_FK" \
     --mysql_storage_engine="$STORAGE_ENGINE" \
+    --trx_level=RC \
     --db-driver=mysql \
     prepare
 
