@@ -31,6 +31,13 @@ transaction-isolation = READ-COMMITTED
 character-set-server = latin1
 collation-server = latin1_bin
 
+# Disable gap lock error for INSERT...SELECT during data loading.
+# MyRocks doesn't support gap locks like InnoDB. With bulk_load=1,
+# sysbench-tpcc's INSERT...SELECT for new_orders still triggers gap lock
+# checks. Disabling the error allows bulk_load to work with these queries.
+gap_lock_raise_error = OFF
+gap_lock_write_log = OFF
+
 # Binary log (ROW format)
 binlog_format = ROW
 
