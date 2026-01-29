@@ -95,17 +95,6 @@ mysql --socket="$SOCKET" "$BENCHMARK_DB" < "${SCRIPT_DIR}/add_idx_only.sql"
 
 log_info "TPC-C tables created successfully"
 
-# For MyRocks: disable bulk_load mode for tpcc_load.
-# tpcc_load interleaves inserts across ORDER, NEW_ORDER, and ORDER_LINE tables
-# per order. With bulk_load=1, each table switch triggers SST file creation,
-# producing ~60M tiny SST ingestions for 2000 warehouses.
-# The bulkload config enables bulk_load=1 by default (good for sysbench),
-# so we disable it here specifically for tpcc_load.
-if [ "$ENGINE" = "percona-myrocks" ]; then
-    log_info "Disabling rocksdb_bulk_load for tpcc_load (interleaved inserts)..."
-    mysql --socket="$SOCKET" -e "SET GLOBAL rocksdb_bulk_load = 0;"
-fi
-
 # Load data in parallel
 log_info "Loading TPC-C data with $TPCC_WAREHOUSES warehouses (parallel loading)..."
 

@@ -31,13 +31,6 @@ transaction-isolation = READ-COMMITTED
 character-set-server = latin1
 collation-server = latin1_bin
 
-# Disable gap lock error for INSERT...SELECT during data loading.
-# MyRocks doesn't support gap locks like InnoDB. With bulk_load=1,
-# sysbench-tpcc's INSERT...SELECT for new_orders still triggers gap lock
-# checks. Disabling the error allows bulk_load to work with these queries.
-gap_lock_raise_error = OFF
-gap_lock_write_log = OFF
-
 # Binary log (ROW format)
 binlog_format = ROW
 
@@ -49,24 +42,16 @@ general_log = 0
 performance_schema = OFF
 
 # ============================================
-# WRITE PATH (bulk_load enabled by default)
+# WRITE PATH
 # ============================================
 
-# ON by default: bulk_load writes directly to bottommost SST files, skipping
-# MemTable and compactions. This is much faster for data loading.
-#
-# Safe for:
-#   - sysbench: each thread handles tables sequentially, no interleaving
-#   - sysbench-tpcc: also processes tables sequentially, and bulk_load
-#     bypasses gap lock detection for its INSERT...SELECT pattern
-#
-# NOT safe for tpcc-mysql (C loader): tpcc_load interleaves inserts across
-# ORDER, NEW_ORDER, and ORDER_LINE tables per order. With bulk_load=1, each
-# table switch triggers SST file creation and ingestion, producing ~60M tiny
-# SST files for 2000 warehouses. The tpcc/prepare.sh script disables bulk_load
-# at session level before running tpcc_load.
-rocksdb_bulk_load = 1
-rocksdb_bulk_load_allow_unsorted = 1
+# We use the default write path (memtable -> flush -> compaction) rather than
+# rocksdb_bulk_load=1. While bulk_load is faster (writes directly to SST files),
+# it doesn't work with our benchmarks:
+#   - sysbench-tpcc: INSERT...SELECT triggers gap lock errors, and Percona
+#     Server 8.4 has no variable to disable gap lock checking (unlike MariaDB)
+#   - tpcc-mysql: interleaved multi-table inserts cause millions of tiny SST
+#     file ingestions, stalling the server
 
 # Commit every rocksdb_bulk_load_size rows to bound transaction memory.
 # Without this or bulk_load, all modifications stay in memory -> OOM.
