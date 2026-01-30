@@ -320,6 +320,13 @@ capture_engine_stats_per_thread() {
     local result_dir=$1
     local threads=$2
 
+    # Free up memory before running mysql client for stats collection
+    # This helps when running under cgroup memory limits
+    log_info "Waiting for memory to settle before capturing stats..."
+    sleep 3
+    sync
+    echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null 2>&1 || true
+
     if [ "$ENGINE" = "percona-myrocks" ]; then
         capture_rocksdb_stats "$result_dir" "$threads"
     else

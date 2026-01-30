@@ -57,7 +57,9 @@ mysql --socket="$SOCKET" -e "GRANT ALL PRIVILEGES ON $BENCHMARK_DB.* TO 'sbtest'
 mysql --socket="$SOCKET" -e "FLUSH PRIVILEGES;"
 
 # Run sysbench prepare
+# Note: Storage engine is determined by MySQL's default-storage-engine setting
 log_info "Running sysbench prepare (this may take a while)..."
+log_info "Expected storage engine: $STORAGE_ENGINE (set via MySQL config)"
 
 START_TIME=$(date +%s)
 
@@ -66,7 +68,6 @@ sysbench oltp_common \
     --mysql-db="$BENCHMARK_DB" \
     --tables="$SYSBENCH_TABLES" \
     --table-size="$SYSBENCH_TABLE_SIZE" \
-    --mysql-table-engine="$STORAGE_ENGINE" \
     prepare || {
     log_error "Sysbench prepare failed"
     exit 1
