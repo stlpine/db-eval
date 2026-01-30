@@ -66,6 +66,7 @@ START_TIME=$(date +%s)
 sysbench oltp_common \
     --mysql-socket="$SOCKET" \
     --mysql-db="$BENCHMARK_DB" \
+    --mysql-storage-engine="$STORAGE_ENGINE" \
     --tables="$SYSBENCH_TABLES" \
     --table-size="$SYSBENCH_TABLE_SIZE" \
     prepare || {
