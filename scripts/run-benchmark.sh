@@ -338,6 +338,7 @@ capture_engine_stats_per_thread() {
 capture_rocksdb_stats() {
     local result_dir=$1
     local threads=${2:-}
+    local query_timeout=30  # seconds per query
 
     log_info "Capturing RocksDB metrics..."
 
@@ -352,25 +353,25 @@ capture_rocksdb_stats() {
         echo "=== RocksDB Metrics (captured at $(date)) ==="
         echo ""
         echo "=== Engine Status (SHOW ENGINE ROCKSDB STATUS) ==="
-        mysql --socket="$SOCKET" -e "SHOW ENGINE ROCKSDB STATUS\G" 2>/dev/null
+        timeout "$query_timeout" mysql --socket="$SOCKET" -e "SHOW ENGINE ROCKSDB STATUS\G" 2>/dev/null || echo "(query timed out or failed)"
         echo ""
         echo "=== Column Family Statistics (ROCKSDB_CFSTATS) ==="
-        mysql --socket="$SOCKET" -e "SELECT * FROM INFORMATION_SCHEMA.ROCKSDB_CFSTATS;" 2>/dev/null
+        timeout "$query_timeout" mysql --socket="$SOCKET" -e "SELECT * FROM INFORMATION_SCHEMA.ROCKSDB_CFSTATS;" 2>/dev/null || echo "(query timed out or failed)"
         echo ""
         echo "=== Compaction Statistics (ROCKSDB_COMPACTION_STATS) ==="
-        mysql --socket="$SOCKET" -e "SELECT * FROM INFORMATION_SCHEMA.ROCKSDB_COMPACTION_STATS;" 2>/dev/null
+        timeout "$query_timeout" mysql --socket="$SOCKET" -e "SELECT * FROM INFORMATION_SCHEMA.ROCKSDB_COMPACTION_STATS;" 2>/dev/null || echo "(query timed out or failed)"
         echo ""
         echo "=== DB Statistics (ROCKSDB_DBSTATS) ==="
-        mysql --socket="$SOCKET" -e "SELECT * FROM INFORMATION_SCHEMA.ROCKSDB_DBSTATS;" 2>/dev/null
+        timeout "$query_timeout" mysql --socket="$SOCKET" -e "SELECT * FROM INFORMATION_SCHEMA.ROCKSDB_DBSTATS;" 2>/dev/null || echo "(query timed out or failed)"
         echo ""
         echo "=== Performance Context (ROCKSDB_PERF_CONTEXT) ==="
-        mysql --socket="$SOCKET" -e "SELECT * FROM INFORMATION_SCHEMA.ROCKSDB_PERF_CONTEXT;" 2>/dev/null
+        timeout "$query_timeout" mysql --socket="$SOCKET" -e "SELECT * FROM INFORMATION_SCHEMA.ROCKSDB_PERF_CONTEXT;" 2>/dev/null || echo "(query timed out or failed)"
         echo ""
         echo "=== Global Info (ROCKSDB_GLOBAL_INFO) ==="
-        mysql --socket="$SOCKET" -e "SELECT * FROM INFORMATION_SCHEMA.ROCKSDB_GLOBAL_INFO;" 2>/dev/null
+        timeout "$query_timeout" mysql --socket="$SOCKET" -e "SELECT * FROM INFORMATION_SCHEMA.ROCKSDB_GLOBAL_INFO;" 2>/dev/null || echo "(query timed out or failed)"
         echo ""
         echo "=== SST File Info (ROCKSDB_INDEX_FILE_MAP) ==="
-        mysql --socket="$SOCKET" -e "SELECT CF_NAME, COUNT(*) as sst_count, SUM(NUM_ENTRIES) as total_entries FROM INFORMATION_SCHEMA.ROCKSDB_INDEX_FILE_MAP GROUP BY CF_NAME;" 2>/dev/null
+        timeout "$query_timeout" mysql --socket="$SOCKET" -e "SELECT CF_NAME, COUNT(*) as sst_count, SUM(NUM_ENTRIES) as total_entries FROM INFORMATION_SCHEMA.ROCKSDB_INDEX_FILE_MAP GROUP BY CF_NAME;" 2>/dev/null || echo "(query timed out or failed)"
     } > "$stats_file"
 
     log_info "RocksDB metrics saved to: $stats_file"
@@ -380,6 +381,7 @@ capture_rocksdb_stats() {
 capture_innodb_stats() {
     local result_dir=$1
     local threads=${2:-}
+    local query_timeout=30  # seconds per query
 
     log_info "Capturing InnoDB metrics..."
 
@@ -394,25 +396,25 @@ capture_innodb_stats() {
         echo "=== InnoDB Metrics (captured at $(date)) ==="
         echo ""
         echo "=== Engine Status (SHOW ENGINE INNODB STATUS) ==="
-        mysql --socket="$SOCKET" -e "SHOW ENGINE INNODB STATUS\G" 2>/dev/null
+        timeout "$query_timeout" mysql --socket="$SOCKET" -e "SHOW ENGINE INNODB STATUS\G" 2>/dev/null || echo "(query timed out or failed)"
         echo ""
         echo "=== Global Status ==="
-        mysql --socket="$SOCKET" -e "SHOW GLOBAL STATUS;" 2>/dev/null
+        timeout "$query_timeout" mysql --socket="$SOCKET" -e "SHOW GLOBAL STATUS;" 2>/dev/null || echo "(query timed out or failed)"
         echo ""
         echo "=== Buffer Pool Wait/Stall Metrics ==="
-        mysql --socket="$SOCKET" -e "SELECT NAME, COUNT, STATUS FROM INFORMATION_SCHEMA.INNODB_METRICS WHERE NAME IN ('buffer_pool_wait_free', 'buffer_pool_reads', 'buffer_pool_read_requests', 'buffer_pool_write_requests');" 2>/dev/null
+        timeout "$query_timeout" mysql --socket="$SOCKET" -e "SELECT NAME, COUNT, STATUS FROM INFORMATION_SCHEMA.INNODB_METRICS WHERE NAME IN ('buffer_pool_wait_free', 'buffer_pool_reads', 'buffer_pool_read_requests', 'buffer_pool_write_requests');" 2>/dev/null || echo "(query timed out or failed)"
         echo ""
         echo "=== Log Wait Metrics ==="
-        mysql --socket="$SOCKET" -e "SELECT NAME, COUNT, STATUS FROM INFORMATION_SCHEMA.INNODB_METRICS WHERE NAME LIKE '%log_wait%' OR NAME LIKE '%log_pending%' OR NAME IN ('log_waits', 'log_write_requests', 'log_writes');" 2>/dev/null
+        timeout "$query_timeout" mysql --socket="$SOCKET" -e "SELECT NAME, COUNT, STATUS FROM INFORMATION_SCHEMA.INNODB_METRICS WHERE NAME LIKE '%log_wait%' OR NAME LIKE '%log_pending%' OR NAME IN ('log_waits', 'log_write_requests', 'log_writes');" 2>/dev/null || echo "(query timed out or failed)"
         echo ""
         echo "=== Checkpoint/Flush Metrics ==="
-        mysql --socket="$SOCKET" -e "SELECT NAME, COUNT, STATUS FROM INFORMATION_SCHEMA.INNODB_METRICS WHERE NAME LIKE '%checkpoint%' OR NAME LIKE '%flush%';" 2>/dev/null
+        timeout "$query_timeout" mysql --socket="$SOCKET" -e "SELECT NAME, COUNT, STATUS FROM INFORMATION_SCHEMA.INNODB_METRICS WHERE NAME LIKE '%checkpoint%' OR NAME LIKE '%flush%';" 2>/dev/null || echo "(query timed out or failed)"
         echo ""
         echo "=== Lock/Mutex Wait Metrics ==="
-        mysql --socket="$SOCKET" -e "SELECT NAME, COUNT, STATUS FROM INFORMATION_SCHEMA.INNODB_METRICS WHERE NAME LIKE '%lock_wait%' OR NAME LIKE '%mutex%';" 2>/dev/null
+        timeout "$query_timeout" mysql --socket="$SOCKET" -e "SELECT NAME, COUNT, STATUS FROM INFORMATION_SCHEMA.INNODB_METRICS WHERE NAME LIKE '%lock_wait%' OR NAME LIKE '%mutex%';" 2>/dev/null || echo "(query timed out or failed)"
         echo ""
         echo "=== All InnoDB Metrics ==="
-        mysql --socket="$SOCKET" -e "SELECT NAME, COUNT, STATUS FROM INFORMATION_SCHEMA.INNODB_METRICS;" 2>/dev/null
+        timeout "$query_timeout" mysql --socket="$SOCKET" -e "SELECT NAME, COUNT, STATUS FROM INFORMATION_SCHEMA.INNODB_METRICS;" 2>/dev/null || echo "(query timed out or failed)"
     } > "$stats_file"
 
     log_info "InnoDB metrics saved to: $stats_file"
