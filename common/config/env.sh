@@ -72,6 +72,12 @@ export SYSBENCH_TABLE_SIZE="50000000"  # 50M rows per table
 export SYSBENCH_TABLES="10"
 export SYSBENCH_WORKLOADS="oltp_read_write oltp_read_only oltp_write_only"
 
+# MyRocks Bloom Filter Configuration
+# Set to "on" to enable bloom filters, "off" to disable
+# IMPORTANT: After changing this, you must re-prepare data for it to take effect
+export MYROCKS_BLOOM_FILTER="off"
+export MYROCKS_BLOOM_BITS_PER_KEY="10"  # 10 bits ≈ 1% false positive rate
+
 # TPC-C Configuration
 export TPCC_WAREHOUSES="2000"
 export TPCC_DURATION="600"  # seconds

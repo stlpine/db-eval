@@ -106,6 +106,20 @@ CONFIG_FILE="$(realpath "$CONFIG_FILE")"
 RUNTIME_CONFIG="/tmp/my-${ENGINE}.cnf"
 cp "$CONFIG_FILE" "$RUNTIME_CONFIG"
 chmod 644 "$RUNTIME_CONFIG"
+
+# For MyRocks: dynamically inject bloom filter settings based on env variable
+if [ "$ENGINE" = "percona-myrocks" ]; then
+    if [ "$MYROCKS_BLOOM_FILTER" = "on" ]; then
+        BLOOM_SETTING=";bloom_filter_policy=bloomfilter:${MYROCKS_BLOOM_BITS_PER_KEY:-10}:false"
+        log_info "Bloom filter ENABLED (${MYROCKS_BLOOM_BITS_PER_KEY:-10} bits per key)"
+    else
+        BLOOM_SETTING=""
+        log_info "Bloom filter DISABLED"
+    fi
+    # Append bloom filter setting to rocksdb_default_cf_options line
+    sed -i "s/^\(rocksdb_default_cf_options.*\)$/\1${BLOOM_SETTING}/" "$RUNTIME_CONFIG"
+fi
+
 CONFIG_FILE="$RUNTIME_CONFIG"
 
 init_mysql() {
