@@ -43,7 +43,8 @@ if [ ! -d "$MYROCKS_DIR" ]; then
     exit 1
 fi
 
-COMPARISON_DIR="${RESULTS_DIR}/comparison/${BENCHMARK}/$(date +%Y%m%d_%H%M%S)"
+PROJECT_ROOT="$(dirname $(dirname $(readlink -f "${BASH_SOURCE[0]}")))"
+COMPARISON_DIR="${PROJECT_ROOT}/comparison/${BENCHMARK}/$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$COMPARISON_DIR"
 
 log_info "Comparing $BENCHMARK results"

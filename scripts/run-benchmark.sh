@@ -218,6 +218,25 @@ capture_data_profile() {
 
     log_info "Capturing data profile..."
 
+    # Generate CSV first - this query caches information_schema stats for subsequent queries
+    # Using longer timeout (120s) for large datasets with many tables
+    {
+        echo "table_name,engine,rows,avg_row_bytes,data_mb,index_mb,total_mb"
+        timeout 120 mysql --socket="$SOCKET" -N -e "
+            SELECT
+                TABLE_NAME,
+                ENGINE,
+                TABLE_ROWS,
+                ROUND(AVG_ROW_LENGTH, 2),
+                ROUND(DATA_LENGTH / 1024 / 1024, 2),
+                ROUND(INDEX_LENGTH / 1024 / 1024, 2),
+                ROUND((DATA_LENGTH + INDEX_LENGTH) / 1024 / 1024, 2)
+            FROM information_schema.TABLES
+            WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
+            ORDER BY (DATA_LENGTH + INDEX_LENGTH) DESC;" 2>/dev/null | tr '\t' ','
+    } > "$profile_csv" 2>&1 || true
+
+    # Generate human-readable txt file using cached stats
     {
         echo "============================================================"
         echo "DATA PROFILE"
@@ -230,7 +249,7 @@ capture_data_profile() {
         echo "============================================================"
         echo "DATABASE SUMMARY"
         echo "============================================================"
-        timeout 30 mysql --socket="$SOCKET" -e "
+        timeout 60 mysql --socket="$SOCKET" -e "
             SELECT
                 COUNT(*) AS total_tables,
                 SUM(TABLE_ROWS) AS total_rows,
@@ -245,18 +264,20 @@ capture_data_profile() {
         echo "============================================================"
         echo "TABLE DETAILS"
         echo "============================================================"
-        timeout 30 mysql --socket="$SOCKET" -e "
-            SELECT
-                TABLE_NAME,
-                ENGINE,
-                TABLE_ROWS AS rows,
-                ROUND(AVG_ROW_LENGTH, 2) AS avg_row_bytes,
-                ROUND(DATA_LENGTH / 1024 / 1024, 2) AS data_mb,
-                ROUND(INDEX_LENGTH / 1024 / 1024, 2) AS index_mb,
-                ROUND((DATA_LENGTH + INDEX_LENGTH) / 1024 / 1024, 2) AS total_mb
-            FROM information_schema.TABLES
-            WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
-            ORDER BY (DATA_LENGTH + INDEX_LENGTH) DESC;" 2>/dev/null || echo "(query failed or timed out)"
+        # Use data from CSV file (already generated above) to avoid redundant query
+        if [ -s "$profile_csv" ] && [ "$(wc -l < "$profile_csv")" -gt 1 ]; then
+            # Print header
+            printf "%-20s %-10s %15s %15s %12s %12s %12s\n" \
+                "TABLE_NAME" "ENGINE" "ROWS" "AVG_ROW_BYTES" "DATA_MB" "INDEX_MB" "TOTAL_MB"
+            printf "%s\n" "$(printf '%.0s-' {1..100})"
+            # Print data rows (skip header line)
+            tail -n +2 "$profile_csv" | while IFS=',' read -r tname engine rows avgrow datamb idxmb totalmb; do
+                printf "%-20s %-10s %15s %15s %12s %12s %12s\n" \
+                    "$tname" "$engine" "$rows" "$avgrow" "$datamb" "$idxmb" "$totalmb"
+            done
+        else
+            echo "(no data available)"
+        fi
         echo ""
 
         echo "============================================================"
@@ -282,23 +303,6 @@ capture_data_profile() {
         echo ""
 
     } > "$profile_file" 2>&1
-
-    # Generate CSV summary for easy parsing
-    {
-        echo "table_name,engine,rows,avg_row_bytes,data_mb,index_mb,total_mb"
-        timeout 30 mysql --socket="$SOCKET" -N -e "
-            SELECT
-                TABLE_NAME,
-                ENGINE,
-                TABLE_ROWS,
-                ROUND(AVG_ROW_LENGTH, 2),
-                ROUND(DATA_LENGTH / 1024 / 1024, 2),
-                ROUND(INDEX_LENGTH / 1024 / 1024, 2),
-                ROUND((DATA_LENGTH + INDEX_LENGTH) / 1024 / 1024, 2)
-            FROM information_schema.TABLES
-            WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
-            ORDER BY (DATA_LENGTH + INDEX_LENGTH) DESC;" 2>/dev/null | tr '\t' ','
-    } > "$profile_csv" 2>&1 || true
 
     log_info "Data profile saved to: $profile_file"
     log_info "Data profile CSV saved to: $profile_csv"
