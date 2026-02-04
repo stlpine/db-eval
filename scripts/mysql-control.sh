@@ -110,7 +110,7 @@ chmod 644 "$RUNTIME_CONFIG"
 # For MyRocks: dynamically inject bloom filter settings based on env variable
 if [ "$ENGINE" = "percona-myrocks" ]; then
     if [ "$MYROCKS_BLOOM_FILTER" = "on" ]; then
-        BLOOM_SETTING=";bloom_filter_policy=bloomfilter:${MYROCKS_BLOOM_BITS_PER_KEY:-10}:false"
+        BLOOM_SETTING=";block_based_table_factory={filter_policy=bloomfilter:${MYROCKS_BLOOM_BITS_PER_KEY:-10}:false;whole_key_filtering=1}"
         log_info "Bloom filter ENABLED (${MYROCKS_BLOOM_BITS_PER_KEY:-10} bits per key)"
     else
         BLOOM_SETTING=""
