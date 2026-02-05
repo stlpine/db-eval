@@ -31,6 +31,7 @@ Options:
                               - percona-innodb
                               - percona-myrocks
     --skip-prepare            Skip data preparation (data must already exist)
+    --full                    Force full data preparation (ignore backup)
     -h, --help                Show this help message
 
 Each benchmark type is processed sequentially: prepare (with SSD reset) -> run.
@@ -48,6 +49,7 @@ EOF
 BENCHMARK="all"
 ENGINE="vanilla-innodb"
 SKIP_PREPARE=false
+FORCE_FULL=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -62,6 +64,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-prepare)
             SKIP_PREPARE=true
+            shift
+            ;;
+        --full)
+            FORCE_FULL=true
             shift
             ;;
         -h|--help)
@@ -120,6 +126,7 @@ log_info "Benchmarks: ${BENCH_ARRAY[*]}"
 log_info "Cgroup: ${CGROUP_NAME}"
 log_info "Memory limit: ${MEMORY_LIMIT}"
 log_info "Skip prepare: $SKIP_PREPARE"
+log_info "Force full preparation: $FORCE_FULL"
 log_info "=========================================="
 echo ""
 
@@ -142,7 +149,11 @@ for bench in "${BENCH_ARRAY[@]}"; do
         log_info "  - SSD will be reset for clean state"
         echo ""
 
-        "${SCRIPT_DIR}/prepare-data.sh" -e "$ENGINE" -b "$bench"
+        PREPARE_ARGS=("-e" "$ENGINE" "-b" "$bench")
+        if [ "$FORCE_FULL" = true ]; then
+            PREPARE_ARGS+=("--full")
+        fi
+        "${SCRIPT_DIR}/prepare-data.sh" "${PREPARE_ARGS[@]}"
 
         echo ""
         log_info "Data preparation for $bench completed"
