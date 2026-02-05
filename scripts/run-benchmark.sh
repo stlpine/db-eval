@@ -15,10 +15,16 @@ Usage: $0 [options]
 
 Options:
     -b, --benchmark <type>    Benchmark type (comma-separated or 'all'):
+                              OLTP benchmarks:
                               - sysbench
                               - tpcc
                               - sysbench-tpcc
-                              - all (default)
+                              OLAP benchmarks:
+                              - clickbench
+                              - tpch-olap
+                              Special:
+                              - all (runs all OLTP benchmarks, default)
+                              - all-olap (runs all OLAP benchmarks)
     -e, --engine <engine>     Engine to use (default: vanilla-innodb):
                               - vanilla-innodb
                               - percona-innodb
@@ -32,6 +38,9 @@ Examples:
     $0 -e percona-innodb -b tpcc
     $0 -e percona-myrocks -b sysbench,tpcc
     $0 -e percona-innodb -b all
+    $0 -e vanilla-innodb -b clickbench
+    $0 -e percona-myrocks -b tpch-olap
+    $0 -e vanilla-innodb -b all-olap
 EOF
     exit 1
 }
@@ -75,11 +84,16 @@ esac
 RUN_SYSBENCH=false
 RUN_TPCC=false
 RUN_SYSBENCH_TPCC=false
+RUN_CLICKBENCH=false
+RUN_TPCH_OLAP=false
 
 if [ "$BENCHMARK" = "all" ]; then
     RUN_SYSBENCH=true
     RUN_TPCC=true
     RUN_SYSBENCH_TPCC=true
+elif [ "$BENCHMARK" = "all-olap" ]; then
+    RUN_CLICKBENCH=true
+    RUN_TPCH_OLAP=true
 else
     IFS=',' read -ra BENCH_ARRAY <<< "$BENCHMARK"
     for bench in "${BENCH_ARRAY[@]}"; do
@@ -92,6 +106,12 @@ else
                 ;;
             sysbench-tpcc)
                 RUN_SYSBENCH_TPCC=true
+                ;;
+            clickbench)
+                RUN_CLICKBENCH=true
+                ;;
+            tpch-olap)
+                RUN_TPCH_OLAP=true
                 ;;
             *)
                 log_error "Invalid benchmark: $bench"
@@ -106,9 +126,11 @@ log_info "Run Benchmark"
 log_info "=========================================="
 log_info "Engine: $ENGINE"
 log_info "Benchmarks to run:"
-[ "$RUN_SYSBENCH" = true ] && log_info "  - sysbench"
-[ "$RUN_TPCC" = true ] && log_info "  - tpcc"
-[ "$RUN_SYSBENCH_TPCC" = true ] && log_info "  - sysbench-tpcc"
+[ "$RUN_SYSBENCH" = true ] && log_info "  - sysbench (OLTP)"
+[ "$RUN_TPCC" = true ] && log_info "  - tpcc (OLTP)"
+[ "$RUN_SYSBENCH_TPCC" = true ] && log_info "  - sysbench-tpcc (OLTP)"
+[ "$RUN_CLICKBENCH" = true ] && log_info "  - clickbench (OLAP)"
+[ "$RUN_TPCH_OLAP" = true ] && log_info "  - tpch-olap (OLAP)"
 log_info "=========================================="
 echo ""
 
@@ -739,6 +761,174 @@ if [ "$RUN_SYSBENCH_TPCC" = true ]; then
     log_info "Sysbench-TPCC benchmark completed!"
     log_info "Sysbench-TPCC results: $SBTPCC_RESULT_DIR"
     log_info "Consolidated results: $SBTPCC_CONSOLIDATED_CSV"
+fi
+
+# ============================================================
+# OLAP BENCHMARKS
+# Note: OLAP benchmarks run queries sequentially (no thread scaling)
+# ============================================================
+
+if [ "$RUN_CLICKBENCH" = true ]; then
+    log_info "=========================================="
+    log_info "Running ClickBench benchmark (OLAP)..."
+    log_info "=========================================="
+
+    # Start MySQL with cold buffer pool
+    start_mysql_cold
+
+    # Check if ClickBench data exists
+    if ! mysql --socket="$SOCKET" -e "SELECT 1 FROM ${BENCHMARK_DB}.hits LIMIT 1" &>/dev/null; then
+        log_error "ClickBench data not found. Run prepare-data.sh -b clickbench first."
+        stop_mysql
+        exit 1
+    fi
+
+    verify_storage_engine
+
+    # Create result directory
+    CB_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+    CB_RESULT_DIR="${RESULTS_DIR}/clickbench/${ENGINE}/${CB_TIMESTAMP}"
+    mkdir -p "$CB_RESULT_DIR"
+    log_info "ClickBench results directory: $CB_RESULT_DIR"
+
+    # Log configuration
+    CB_CONFIG_LOG="${CB_RESULT_DIR}/benchmark_config.log"
+    log_info "Logging configuration to: $CB_CONFIG_LOG"
+    {
+        echo "============================================================"
+        echo "BENCHMARK CONFIGURATION LOG"
+        echo "Generated: $(date)"
+        echo "Engine: $ENGINE"
+        echo "Benchmark: ClickBench (OLAP)"
+        echo "============================================================"
+        echo ""
+        echo "============================================================"
+        echo "SYSTEM INFORMATION"
+        echo "============================================================"
+        echo "Hostname: $(hostname)"
+        echo "Kernel: $(uname -r)"
+        echo "OS: $(cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d= -f2 | tr -d '"')"
+        echo ""
+        echo "CPU Info:"
+        lscpu 2>/dev/null | grep -E "^(Model name|Socket|Core|Thread|CPU\(s\)|CPU MHz)" || cat /proc/cpuinfo | grep -E "^(model name|cpu cores|siblings)" | head -4
+        echo ""
+        echo "Memory Info:"
+        free -h 2>/dev/null || cat /proc/meminfo | head -3
+        echo ""
+        echo "Disk Info:"
+        df -h "$SSD_MOUNT" 2>/dev/null
+        echo ""
+        echo "============================================================"
+        echo "BENCHMARK PARAMETERS (env.sh)"
+        echo "============================================================"
+        echo "BENCHMARK_DB: $BENCHMARK_DB"
+        echo "CLICKBENCH_QUERY_RUNS: $CLICKBENCH_QUERY_RUNS"
+        echo "CLICKBENCH_QUERY_TIMEOUT: $CLICKBENCH_QUERY_TIMEOUT"
+        echo ""
+        echo "============================================================"
+        echo "MYSQL SERVER VARIABLES"
+        echo "============================================================"
+        mysql --socket="$SOCKET" -e "SHOW VARIABLES;" 2>/dev/null
+        echo ""
+    } > "$CB_CONFIG_LOG" 2>&1
+
+    # Capture data profile
+    capture_data_profile "$CB_RESULT_DIR"
+
+    # Run ClickBench (no thread loop - sequential query execution)
+    if ! "${SCRIPT_DIR}/../clickbench/run.sh" "$ENGINE" "$CB_RESULT_DIR"; then
+        log_error "ClickBench benchmark failed"
+        stop_mysql
+        exit 1
+    fi
+
+    capture_engine_stats "$CB_RESULT_DIR"
+    stop_mysql
+
+    log_info "ClickBench benchmark completed!"
+    log_info "ClickBench results: $CB_RESULT_DIR"
+fi
+
+if [ "$RUN_TPCH_OLAP" = true ]; then
+    log_info "=========================================="
+    log_info "Running TPC-H benchmark (OLAP)..."
+    log_info "=========================================="
+
+    # Start MySQL with cold buffer pool
+    start_mysql_cold
+
+    # Check if TPC-H data exists (check lineitem as the largest table)
+    if ! mysql --socket="$SOCKET" -e "SELECT 1 FROM ${BENCHMARK_DB}.lineitem LIMIT 1" &>/dev/null; then
+        log_error "TPC-H data not found. Run prepare-data.sh -b tpch-olap first."
+        stop_mysql
+        exit 1
+    fi
+
+    verify_storage_engine
+
+    # Create result directory
+    TPCH_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+    TPCH_RESULT_DIR="${RESULTS_DIR}/tpch-olap/${ENGINE}/${TPCH_TIMESTAMP}"
+    mkdir -p "$TPCH_RESULT_DIR"
+    log_info "TPC-H results directory: $TPCH_RESULT_DIR"
+
+    # Log configuration
+    TPCH_CONFIG_LOG="${TPCH_RESULT_DIR}/benchmark_config.log"
+    log_info "Logging configuration to: $TPCH_CONFIG_LOG"
+    {
+        echo "============================================================"
+        echo "BENCHMARK CONFIGURATION LOG"
+        echo "Generated: $(date)"
+        echo "Engine: $ENGINE"
+        echo "Benchmark: TPC-H (OLAP)"
+        echo "============================================================"
+        echo ""
+        echo "============================================================"
+        echo "SYSTEM INFORMATION"
+        echo "============================================================"
+        echo "Hostname: $(hostname)"
+        echo "Kernel: $(uname -r)"
+        echo "OS: $(cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d= -f2 | tr -d '"')"
+        echo ""
+        echo "CPU Info:"
+        lscpu 2>/dev/null | grep -E "^(Model name|Socket|Core|Thread|CPU\(s\)|CPU MHz)" || cat /proc/cpuinfo | grep -E "^(model name|cpu cores|siblings)" | head -4
+        echo ""
+        echo "Memory Info:"
+        free -h 2>/dev/null || cat /proc/meminfo | head -3
+        echo ""
+        echo "Disk Info:"
+        df -h "$SSD_MOUNT" 2>/dev/null
+        echo ""
+        echo "============================================================"
+        echo "BENCHMARK PARAMETERS (env.sh)"
+        echo "============================================================"
+        echo "BENCHMARK_DB: $BENCHMARK_DB"
+        echo "TPCH_SCALE_FACTOR: $TPCH_SCALE_FACTOR"
+        echo "TPCH_QUERY_RUNS: $TPCH_QUERY_RUNS"
+        echo "TPCH_QUERY_TIMEOUT: $TPCH_QUERY_TIMEOUT"
+        echo ""
+        echo "============================================================"
+        echo "MYSQL SERVER VARIABLES"
+        echo "============================================================"
+        mysql --socket="$SOCKET" -e "SHOW VARIABLES;" 2>/dev/null
+        echo ""
+    } > "$TPCH_CONFIG_LOG" 2>&1
+
+    # Capture data profile
+    capture_data_profile "$TPCH_RESULT_DIR"
+
+    # Run TPC-H (no thread loop - sequential query execution)
+    if ! "${SCRIPT_DIR}/../tpch-olap/run.sh" "$ENGINE" "$TPCH_RESULT_DIR"; then
+        log_error "TPC-H benchmark failed"
+        stop_mysql
+        exit 1
+    fi
+
+    capture_engine_stats "$TPCH_RESULT_DIR"
+    stop_mysql
+
+    log_info "TPC-H benchmark completed!"
+    log_info "TPC-H results: $TPCH_RESULT_DIR"
 fi
 
 END_TIME=$(date +%s)

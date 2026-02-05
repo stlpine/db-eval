@@ -9,9 +9,14 @@ usage() {
 Usage: $0 <benchmark> <innodb_result_dir> <myrocks_result_dir>
 
 Benchmark:
+    OLTP benchmarks:
     sysbench        - Compare sysbench results
     tpcc            - Compare TPC-C results
     sysbench-tpcc   - Compare sysbench-tpcc results
+
+    OLAP benchmarks:
+    clickbench      - Compare ClickBench results (per-query times)
+    tpch-olap       - Compare TPC-H results (per-query times)
 
 Arguments:
     innodb_result_dir   - Path to InnoDB results directory
@@ -20,7 +25,8 @@ Arguments:
 Example:
     $0 sysbench results/sysbench/innodb/20260108_120000 results/sysbench/myrocks/20260108_130000
     $0 tpcc results/tpcc/innodb/20260108_140000 results/tpcc/myrocks/20260108_150000
-    $0 sysbench-tpcc results/sysbench-tpcc/vanilla-innodb/20260108_160000 results/sysbench-tpcc/percona-myrocks/20260108_170000
+    $0 clickbench results/clickbench/vanilla-innodb/20260108_160000 results/clickbench/percona-myrocks/20260108_170000
+    $0 tpch-olap results/tpch-olap/vanilla-innodb/20260108_180000 results/tpch-olap/percona-myrocks/20260108_190000
 EOF
     exit 1
 }
@@ -332,6 +338,232 @@ compare_sysbench_tpcc() {
     } | tee "${COMPARISON_DIR}/comparison_report.txt"
 }
 
+compare_clickbench() {
+    local innodb_csv="${INNODB_DIR}/clickbench_summary.csv"
+    local myrocks_csv="${MYROCKS_DIR}/clickbench_summary.csv"
+    local innodb_size="${INNODB_DIR}/clickbench_size_metrics.csv"
+    local myrocks_size="${MYROCKS_DIR}/clickbench_size_metrics.csv"
+
+    if [ ! -f "$innodb_csv" ] || [ ! -f "$myrocks_csv" ]; then
+        log_error "ClickBench summary CSV files not found"
+        exit 1
+    fi
+
+    # Merge results
+    {
+        echo "query_num,innodb_cold,innodb_warm1,innodb_warm2,innodb_min,innodb_status,myrocks_cold,myrocks_warm1,myrocks_warm2,myrocks_min,myrocks_status"
+        paste -d',' <(tail -n +2 "$innodb_csv") <(tail -n +2 "$myrocks_csv" | cut -d',' -f2-)
+    } > "${COMPARISON_DIR}/merged_results.csv"
+
+    # Create comparison report
+    {
+        echo "=========================================="
+        echo "ClickBench Performance Comparison"
+        echo "InnoDB vs MyRocks"
+        echo "Date: $(date)"
+        echo "=========================================="
+        echo ""
+        echo "[1] InnoDB: $INNODB_DIR"
+        echo "[2] MyRocks: $MYROCKS_DIR"
+        echo ""
+
+        # Database size comparison
+        echo "==================== Database Size Comparison ===================="
+        echo ""
+        if [ -f "$innodb_size" ] && [ -f "$myrocks_size" ]; then
+            innodb_total_gb=$(awk -F',' 'NR==2 {print $5}' "$innodb_size")
+            myrocks_total_gb=$(awk -F',' 'NR==2 {print $5}' "$myrocks_size")
+            innodb_data_gb=$(awk -F',' 'NR==2 {print $3}' "$innodb_size")
+            myrocks_data_gb=$(awk -F',' 'NR==2 {print $3}' "$myrocks_size")
+
+            printf "%-20s %12s %12s %12s\n" "Metric" "InnoDB" "MyRocks" "Ratio"
+            echo "------------------------------------------------------------"
+            if [ -n "$innodb_data_gb" ] && [ -n "$myrocks_data_gb" ]; then
+                ratio=$(awk "BEGIN {printf \"%.2f\", $innodb_data_gb / $myrocks_data_gb}")
+                printf "%-20s %10.2f GB %10.2f GB %10.2fx\n" "Data Size" "$innodb_data_gb" "$myrocks_data_gb" "$ratio"
+            fi
+            if [ -n "$innodb_total_gb" ] && [ -n "$myrocks_total_gb" ]; then
+                ratio=$(awk "BEGIN {printf \"%.2f\", $innodb_total_gb / $myrocks_total_gb}")
+                printf "%-20s %10.2f GB %10.2f GB %10.2fx\n" "Total Size" "$innodb_total_gb" "$myrocks_total_gb" "$ratio"
+            fi
+        else
+            echo "(Size metrics not available - run benchmark again to collect)"
+        fi
+        echo ""
+
+        echo "==================== Per-Query Best Time Comparison ===================="
+        echo ""
+        printf "%-10s %12s %12s %10s\n" "Query" "InnoDB (s)" "MyRocks (s)" "Speedup"
+        echo "-----------------------------------------------"
+
+        # Compare min times for each query
+        awk -F',' 'NR>1 {
+            q = $1
+            innodb_min = $5
+            myrocks_min = $10
+            if (innodb_min != "N/A" && myrocks_min != "N/A" && innodb_min > 0) {
+                speedup = innodb_min / myrocks_min
+                printf "%-10s %12.3f %12.3f %9.2fx\n", q, innodb_min, myrocks_min, speedup
+            } else {
+                printf "%-10s %12s %12s %10s\n", q, innodb_min, myrocks_min, "N/A"
+            }
+        }' "${COMPARISON_DIR}/merged_results.csv"
+
+        echo ""
+        echo "==================== Performance Summary ===================="
+        echo ""
+
+        # Calculate totals and geometric mean
+        awk -F',' 'NR>1 {
+            if ($5 != "N/A" && $5 > 0) {
+                innodb_total += $5
+                innodb_log_sum += log($5)
+                innodb_count++
+            }
+            if ($10 != "N/A" && $10 > 0) {
+                myrocks_total += $10
+                myrocks_log_sum += log($10)
+                myrocks_count++
+            }
+        }
+        END {
+            printf "Total best time (InnoDB):  %.2f seconds\n", innodb_total
+            printf "Total best time (MyRocks): %.2f seconds\n", myrocks_total
+            if (innodb_count > 0) {
+                innodb_geomean = exp(innodb_log_sum / innodb_count)
+                printf "Geometric mean (InnoDB):   %.3f seconds\n", innodb_geomean
+            }
+            if (myrocks_count > 0) {
+                myrocks_geomean = exp(myrocks_log_sum / myrocks_count)
+                printf "Geometric mean (MyRocks):  %.3f seconds\n", myrocks_geomean
+            }
+            if (innodb_total > 0 && myrocks_total > 0) {
+                printf "Overall speedup (total):   %.2fx\n", innodb_total / myrocks_total
+            }
+            if (innodb_count > 0 && myrocks_count > 0) {
+                printf "Overall speedup (geomean): %.2fx\n", innodb_geomean / myrocks_geomean
+            }
+        }' "${COMPARISON_DIR}/merged_results.csv"
+
+    } | tee "${COMPARISON_DIR}/comparison_report.txt"
+}
+
+compare_tpch_olap() {
+    local innodb_csv="${INNODB_DIR}/tpch_summary.csv"
+    local myrocks_csv="${MYROCKS_DIR}/tpch_summary.csv"
+    local innodb_size="${INNODB_DIR}/tpch_size_metrics.csv"
+    local myrocks_size="${MYROCKS_DIR}/tpch_size_metrics.csv"
+
+    if [ ! -f "$innodb_csv" ] || [ ! -f "$myrocks_csv" ]; then
+        log_error "TPC-H summary CSV files not found"
+        exit 1
+    fi
+
+    # Merge results
+    {
+        echo "query_num,innodb_cold,innodb_warm1,innodb_warm2,innodb_min,innodb_status,myrocks_cold,myrocks_warm1,myrocks_warm2,myrocks_min,myrocks_status"
+        paste -d',' <(tail -n +2 "$innodb_csv") <(tail -n +2 "$myrocks_csv" | cut -d',' -f2-)
+    } > "${COMPARISON_DIR}/merged_results.csv"
+
+    # Create comparison report
+    {
+        echo "=========================================="
+        echo "TPC-H Performance Comparison"
+        echo "InnoDB vs MyRocks"
+        echo "Date: $(date)"
+        echo "=========================================="
+        echo ""
+        echo "[1] InnoDB: $INNODB_DIR"
+        echo "[2] MyRocks: $MYROCKS_DIR"
+        echo ""
+
+        # Database size comparison
+        echo "==================== Database Size Comparison ===================="
+        echo ""
+        if [ -f "$innodb_size" ] && [ -f "$myrocks_size" ]; then
+            innodb_sf=$(awk -F',' 'NR==2 {print $2}' "$innodb_size")
+            innodb_total_gb=$(awk -F',' 'NR==2 {print $6}' "$innodb_size")
+            myrocks_total_gb=$(awk -F',' 'NR==2 {print $6}' "$myrocks_size")
+            innodb_data_gb=$(awk -F',' 'NR==2 {print $4}' "$innodb_size")
+            myrocks_data_gb=$(awk -F',' 'NR==2 {print $4}' "$myrocks_size")
+
+            echo "Scale Factor: ${innodb_sf}"
+            echo ""
+            printf "%-20s %12s %12s %12s\n" "Metric" "InnoDB" "MyRocks" "Ratio"
+            echo "------------------------------------------------------------"
+            if [ -n "$innodb_data_gb" ] && [ -n "$myrocks_data_gb" ]; then
+                ratio=$(awk "BEGIN {printf \"%.2f\", $innodb_data_gb / $myrocks_data_gb}")
+                printf "%-20s %10.2f GB %10.2f GB %10.2fx\n" "Data Size" "$innodb_data_gb" "$myrocks_data_gb" "$ratio"
+            fi
+            if [ -n "$innodb_total_gb" ] && [ -n "$myrocks_total_gb" ]; then
+                ratio=$(awk "BEGIN {printf \"%.2f\", $innodb_total_gb / $myrocks_total_gb}")
+                printf "%-20s %10.2f GB %10.2f GB %10.2fx\n" "Total Size" "$innodb_total_gb" "$myrocks_total_gb" "$ratio"
+                compression=$(awk "BEGIN {printf \"%.2f\", $innodb_total_gb / $myrocks_total_gb}")
+                echo ""
+                echo "MyRocks compression ratio: ${compression}x smaller than InnoDB"
+            fi
+        else
+            echo "(Size metrics not available - run benchmark again to collect)"
+        fi
+        echo ""
+
+        echo "==================== Per-Query Best Time Comparison ===================="
+        echo ""
+        printf "%-10s %12s %12s %10s\n" "Query" "InnoDB (s)" "MyRocks (s)" "Speedup"
+        echo "-----------------------------------------------"
+
+        # Compare min times for each query
+        awk -F',' 'NR>1 {
+            q = $1
+            innodb_min = $5
+            myrocks_min = $10
+            if (innodb_min != "N/A" && myrocks_min != "N/A" && innodb_min > 0) {
+                speedup = innodb_min / myrocks_min
+                printf "%-10s %12.3f %12.3f %9.2fx\n", q, innodb_min, myrocks_min, speedup
+            } else {
+                printf "%-10s %12s %12s %10s\n", q, innodb_min, myrocks_min, "N/A"
+            }
+        }' "${COMPARISON_DIR}/merged_results.csv"
+
+        echo ""
+        echo "==================== Performance Summary ===================="
+        echo ""
+
+        # Calculate totals and geometric mean
+        awk -F',' 'NR>1 {
+            if ($5 != "N/A" && $5 > 0) {
+                innodb_total += $5
+                innodb_log_sum += log($5)
+                innodb_count++
+            }
+            if ($10 != "N/A" && $10 > 0) {
+                myrocks_total += $10
+                myrocks_log_sum += log($10)
+                myrocks_count++
+            }
+        }
+        END {
+            printf "Total best time (InnoDB):  %.2f seconds\n", innodb_total
+            printf "Total best time (MyRocks): %.2f seconds\n", myrocks_total
+            if (innodb_count > 0) {
+                innodb_geomean = exp(innodb_log_sum / innodb_count)
+                printf "Geometric mean (InnoDB):   %.3f seconds\n", innodb_geomean
+            }
+            if (myrocks_count > 0) {
+                myrocks_geomean = exp(myrocks_log_sum / myrocks_count)
+                printf "Geometric mean (MyRocks):  %.3f seconds\n", myrocks_geomean
+            }
+            if (innodb_total > 0 && myrocks_total > 0) {
+                printf "Overall speedup (total):   %.2fx\n", innodb_total / myrocks_total
+            }
+            if (innodb_count > 0 && myrocks_count > 0) {
+                printf "Overall speedup (geomean): %.2fx\n", innodb_geomean / myrocks_geomean
+            }
+        }' "${COMPARISON_DIR}/merged_results.csv"
+
+    } | tee "${COMPARISON_DIR}/comparison_report.txt"
+}
+
 # Run comparison based on benchmark type
 case $BENCHMARK in
     sysbench)
@@ -342,6 +574,12 @@ case $BENCHMARK in
         ;;
     sysbench-tpcc)
         compare_sysbench_tpcc
+        ;;
+    clickbench)
+        compare_clickbench
+        ;;
+    tpch-olap)
+        compare_tpch_olap
         ;;
     *)
         log_error "Unknown benchmark: $BENCHMARK"

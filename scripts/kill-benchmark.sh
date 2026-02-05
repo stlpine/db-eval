@@ -10,7 +10,7 @@ Usage: $0 [options]
 
 Options:
     -a, --all         Kill all benchmark processes and MySQL instances
-    -b, --benchmark   Kill only benchmark processes (sysbench, tpcc)
+    -b, --benchmark   Kill only benchmark processes (sysbench, tpcc, dbgen)
     -m, --mysql       Kill only MySQL instances
     -n, --monitoring  Kill only monitoring processes (pidstat, iostat)
     -h, --help        Show this help message
@@ -85,12 +85,15 @@ if [ "$KILL_BENCHMARK" = true ]; then
     log_info ""
     log_info "Stopping benchmark processes..."
 
-    # Sysbench
+    # Sysbench (OLTP)
     kill_processes "sysbench" "sysbench"
 
     # TPC-C (tpcc_start and tpcc_load)
     kill_processes "tpcc_start" "tpcc_start"
     kill_processes "tpcc_load" "tpcc_load"
+
+    # TPC-H dbgen (data generation)
+    kill_processes "dbgen" "dbgen"
 fi
 
 # Kill monitoring processes
@@ -147,9 +150,9 @@ log_info "Cleanup complete"
 log_info "=========================================="
 
 # Show remaining processes if any
-remaining=$(pgrep -f "sysbench|tpcc_|mysqld|pidstat|iostat" 2>/dev/null | wc -l)
+remaining=$(pgrep -f "sysbench|tpcc_|dbgen|mysqld|pidstat|iostat" 2>/dev/null | wc -l)
 if [ "$remaining" -gt 0 ]; then
     log_info ""
     log_info "Warning: Some processes may still be running:"
-    pgrep -af "sysbench|tpcc_|mysqld|pidstat|iostat" 2>/dev/null || true
+    pgrep -af "sysbench|tpcc_|dbgen|mysqld|pidstat|iostat" 2>/dev/null || true
 fi

@@ -92,6 +92,18 @@ export SYSBENCH_TPCC_REPORT_INTERVAL="10" # Report interval in seconds
 export SYSBENCH_TPCC_USE_FK="0"           # Disable foreign keys for fair MyRocks comparison
 # Note: transaction-isolation and collation are set in my-*.cnf server configs
 
+# ClickBench Configuration (OLAP)
+export CLICKBENCH_DATA_URL="https://datasets.clickhouse.com/hits_compatible/hits.tsv.gz"
+export CLICKBENCH_DATA_DIR="${SSD_MOUNT}/clickbench-data"
+export CLICKBENCH_QUERY_RUNS="3"           # cold, warm1, warm2
+export CLICKBENCH_QUERY_TIMEOUT="600"      # 10 min per query
+
+# TPC-H Configuration (OLAP)
+export TPCH_SCALE_FACTOR="100"             # SF100 = ~100GB data
+export TPCH_DATA_DIR="${SSD_MOUNT}/tpch-data"
+export TPCH_QUERY_RUNS="3"                 # cold, warm1, warm2
+export TPCH_QUERY_TIMEOUT="600"            # 10 min per query
+
 # Results Directory
 export RESULTS_DIR="$(dirname $(dirname $(dirname $(readlink -f "${BASH_SOURCE[0]}"))))/results"
 

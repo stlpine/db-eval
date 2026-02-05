@@ -31,10 +31,16 @@ Options:
                               - percona-myrocks
                               - all
     -b, --benchmark <type>    Benchmark type (comma-separated, default: all):
+                              OLTP benchmarks:
                               - sysbench
                               - tpcc
                               - sysbench-tpcc
-                              - all (sysbench,tpcc,sysbench-tpcc)
+                              OLAP benchmarks:
+                              - clickbench
+                              - tpch-olap
+                              Special:
+                              - all (all OLTP benchmarks, default)
+                              - all-olap (all OLAP benchmarks)
     -j, --jobs <num>          Number of parallel copy jobs for backup (default: 96)
     --skip-backup             Skip backup step (only prepare data)
     -h, --help                Show this help message
@@ -109,11 +115,13 @@ esac
 BENCHMARKS=()
 if [ "$BENCHMARK" = "all" ]; then
     BENCHMARKS=("sysbench" "tpcc" "sysbench-tpcc")
+elif [ "$BENCHMARK" = "all-olap" ]; then
+    BENCHMARKS=("clickbench" "tpch-olap")
 else
     IFS=',' read -ra BENCHMARKS <<< "$BENCHMARK"
     for bench in "${BENCHMARKS[@]}"; do
         case $bench in
-            sysbench|tpcc|sysbench-tpcc)
+            sysbench|tpcc|sysbench-tpcc|clickbench|tpch-olap)
                 ;;
             *)
                 log_error "Invalid benchmark: $bench"

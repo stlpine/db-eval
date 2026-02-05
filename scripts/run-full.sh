@@ -20,10 +20,16 @@ Usage: $0 [options]
 
 Options:
     -b, --benchmark <type>    Benchmark type (comma-separated or 'all'):
+                              OLTP benchmarks:
                               - sysbench
                               - tpcc
                               - sysbench-tpcc
-                              - all (default)
+                              OLAP benchmarks:
+                              - clickbench
+                              - tpch-olap
+                              Special:
+                              - all (all OLTP benchmarks, default)
+                              - all-olap (all OLAP benchmarks)
     -e, --engine <engine>     Engine to use (default: vanilla-innodb):
                               - vanilla-innodb
                               - percona-innodb
@@ -41,6 +47,8 @@ Examples:
     $0 -e percona-innodb -b tpcc
     $0 -e percona-myrocks -b all
     $0 -e percona-innodb -b tpcc --skip-prepare
+    $0 -e vanilla-innodb -b clickbench
+    $0 -e vanilla-innodb -b all-olap
 EOF
     exit 1
 }
@@ -94,12 +102,14 @@ esac
 BENCH_ARRAY=()
 if [ "$BENCHMARK" = "all" ]; then
     BENCH_ARRAY=("sysbench" "tpcc" "sysbench-tpcc")
+elif [ "$BENCHMARK" = "all-olap" ]; then
+    BENCH_ARRAY=("clickbench" "tpch-olap")
 else
     IFS=',' read -ra BENCH_ARRAY <<< "$BENCHMARK"
     # Validate benchmark types
     for bench in "${BENCH_ARRAY[@]}"; do
         case $bench in
-            sysbench|tpcc|sysbench-tpcc)
+            sysbench|tpcc|sysbench-tpcc|clickbench|tpch-olap)
                 ;;
             *)
                 log_error "Invalid benchmark: $bench"

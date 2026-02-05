@@ -14,12 +14,17 @@ usage() {
 Usage: $0 [options]
 
 Options:
-    -b, --benchmark <type>    Benchmark type (required for restore, default: tpcc):
+    -b, --benchmark <type>    Benchmark type (required for restore):
+                              OLTP benchmarks:
                               - sysbench
                               - tpcc
                               - sysbench-tpcc
-                              NOTE: tpcc and sysbench-tpcc cannot be prepared together
-                              (they use the same database). Prepare them separately.
+                              OLAP benchmarks:
+                              - clickbench
+                              - tpch-olap
+                              NOTE: All benchmarks share the same database. Only one
+                              benchmark can be loaded at a time to ensure fair comparison
+                              and maximize available SSD space.
     -e, --engine <engine>     Engine to use (default: vanilla-innodb):
                               - vanilla-innodb
                               - percona-innodb
@@ -190,6 +195,8 @@ fi
 PREPARE_SYSBENCH=false
 PREPARE_TPCC=false
 PREPARE_SYSBENCH_TPCC=false
+PREPARE_CLICKBENCH=false
+PREPARE_TPCH_OLAP=false
 
 IFS=',' read -ra BENCH_ARRAY <<< "$BENCHMARK"
 for bench in "${BENCH_ARRAY[@]}"; do
@@ -203,6 +210,12 @@ for bench in "${BENCH_ARRAY[@]}"; do
         sysbench-tpcc)
             PREPARE_SYSBENCH_TPCC=true
             ;;
+        clickbench)
+            PREPARE_CLICKBENCH=true
+            ;;
+        tpch-olap)
+            PREPARE_TPCH_OLAP=true
+            ;;
         *)
             log_error "Invalid benchmark: $bench"
             usage
@@ -210,16 +223,18 @@ for bench in "${BENCH_ARRAY[@]}"; do
     esac
 done
 
-# Validate: only one benchmark can be prepared at a time (they all share the same database)
+# Validate: Only one benchmark can be prepared at a time (all share the same database)
 BENCH_COUNT=0
 [ "$PREPARE_SYSBENCH" = true ] && BENCH_COUNT=$((BENCH_COUNT + 1))
 [ "$PREPARE_TPCC" = true ] && BENCH_COUNT=$((BENCH_COUNT + 1))
 [ "$PREPARE_SYSBENCH_TPCC" = true ] && BENCH_COUNT=$((BENCH_COUNT + 1))
+[ "$PREPARE_CLICKBENCH" = true ] && BENCH_COUNT=$((BENCH_COUNT + 1))
+[ "$PREPARE_TPCH_OLAP" = true ] && BENCH_COUNT=$((BENCH_COUNT + 1))
 
 if [ "$BENCH_COUNT" -gt 1 ]; then
-    log_error "Cannot prepare multiple benchmarks together."
-    log_error "All benchmarks use the same database and would overwrite each other."
-    log_error "Please prepare them separately and create separate backups."
+    log_error "Cannot prepare multiple benchmarks in one command."
+    log_error "All benchmarks share the same database."
+    log_error "Prepare and backup each benchmark separately."
     exit 1
 fi
 
@@ -231,6 +246,10 @@ elif [ "$PREPARE_TPCC" = true ]; then
     RESTORE_BENCHMARK="tpcc"
 elif [ "$PREPARE_SYSBENCH_TPCC" = true ]; then
     RESTORE_BENCHMARK="sysbench-tpcc"
+elif [ "$PREPARE_CLICKBENCH" = true ]; then
+    RESTORE_BENCHMARK="clickbench"
+elif [ "$PREPARE_TPCH_OLAP" = true ]; then
+    RESTORE_BENCHMARK="tpch-olap"
 fi
 
 # Determine if we should use backup
@@ -260,9 +279,11 @@ fi
 log_info "Skip SSD Reset: $SKIP_RESET"
 if [ "$USE_BACKUP" = false ]; then
     log_info "Benchmarks to prepare:"
-    [ "$PREPARE_SYSBENCH" = true ] && log_info "  - sysbench"
-    [ "$PREPARE_TPCC" = true ] && log_info "  - tpcc"
-    [ "$PREPARE_SYSBENCH_TPCC" = true ] && log_info "  - sysbench-tpcc"
+    [ "$PREPARE_SYSBENCH" = true ] && log_info "  - sysbench (OLTP)"
+    [ "$PREPARE_TPCC" = true ] && log_info "  - tpcc (OLTP)"
+    [ "$PREPARE_SYSBENCH_TPCC" = true ] && log_info "  - sysbench-tpcc (OLTP)"
+    [ "$PREPARE_CLICKBENCH" = true ] && log_info "  - clickbench (OLAP)"
+    [ "$PREPARE_TPCH_OLAP" = true ] && log_info "  - tpch-olap (OLAP)"
 fi
 log_info "=========================================="
 echo ""
@@ -421,6 +442,22 @@ else
         log_info "Preparing Sysbench-TPCC data..."
         log_info "=========================================="
         "${SCRIPT_DIR}/../sysbench-tpcc/prepare.sh" "$ENGINE"
+    fi
+
+    if [ "$PREPARE_CLICKBENCH" = true ]; then
+        log_info "=========================================="
+        log_info "Preparing ClickBench data (OLAP)..."
+        log_info "This downloads ~20GB and loads ~75GB of data"
+        log_info "=========================================="
+        "${SCRIPT_DIR}/../clickbench/prepare.sh" "$ENGINE"
+    fi
+
+    if [ "$PREPARE_TPCH_OLAP" = true ]; then
+        log_info "=========================================="
+        log_info "Preparing TPC-H OLAP data (SF${TPCH_SCALE_FACTOR})..."
+        log_info "This generates ~${TPCH_SCALE_FACTOR}GB of data"
+        log_info "=========================================="
+        "${SCRIPT_DIR}/../tpch-olap/prepare.sh" "$ENGINE"
     fi
 
     # Stop MySQL

@@ -4,3 +4,6 @@
 [submodule "sysbench-tpcc/sysbench-tpcc"]
 	path = sysbench-tpcc/sysbench-tpcc
 	url = https://github.com/Percona-Lab/sysbench-tpcc.git
+[submodule "tpch-olap/tpch-kit"]
+	path = tpch-olap/tpch-kit
+	url = https://github.com/gregrahn/tpch-kit.git
