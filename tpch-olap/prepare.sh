@@ -102,6 +102,9 @@ log_info "This may take a while for large scale factors..."
 
 cd "$TPCH_DATA_DIR"
 
+# Set DSS_PATH so dbgen can find dists.dss (distribution file)
+export DSS_PATH="$DBGEN_DIR"
+
 START_TIME=$(date +%s)
 
 # Generate data files
