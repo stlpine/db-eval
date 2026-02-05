@@ -105,6 +105,11 @@ cd "$TPCH_DATA_DIR"
 # Set DSS_PATH so dbgen can find dists.dss (distribution file)
 export DSS_PATH="$DBGEN_DIR"
 
+# Also copy dists.dss to current directory as fallback (some dbgen versions ignore DSS_PATH)
+if [ ! -f "dists.dss" ]; then
+    cp "$DBGEN_DIR/dists.dss" .
+fi
+
 START_TIME=$(date +%s)
 
 # Generate data files
