@@ -102,10 +102,8 @@ log_info "This may take a while for large scale factors..."
 
 cd "$TPCH_DATA_DIR"
 
-# Set DSS_PATH so dbgen can find dists.dss (distribution file)
-export DSS_PATH="$DBGEN_DIR"
-
-# Also copy dists.dss to current directory as fallback (some dbgen versions ignore DSS_PATH)
+# Copy dists.dss to data directory (dbgen needs it in current directory)
+# Note: DSS_PATH env var controls BOTH input and output paths, so we copy instead
 if [ ! -f "dists.dss" ]; then
     cp "$DBGEN_DIR/dists.dss" .
 fi
