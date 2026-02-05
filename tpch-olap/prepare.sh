@@ -160,6 +160,7 @@ for table in $TABLES; do
 
     # TPC-H .tbl files use | as delimiter and have trailing |
     # Use LOAD DATA LOCAL INFILE for bulk loading
+    # Note: Use '\n' for line terminator - the trailing | becomes an empty field that MySQL ignores
     mysql --socket="$SOCKET" --local-infile=1 "$BENCHMARK_DB" -e "
 SET unique_checks = 0;
 SET foreign_key_checks = 0;
@@ -168,7 +169,7 @@ SET sql_log_bin = 0;
 LOAD DATA LOCAL INFILE '$tbl_file'
 INTO TABLE $table
 FIELDS TERMINATED BY '|'
-LINES TERMINATED BY '|\n';
+LINES TERMINATED BY '\n';
 
 SET unique_checks = 1;
 SET foreign_key_checks = 1;

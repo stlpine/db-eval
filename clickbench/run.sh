@@ -201,9 +201,9 @@ for ((q=0; q<${#QUERIES[@]}; q++)); do
     echo "$((q+1)),$cold_time,$warm1_time,$warm2_time,$min_time,$overall_status" >> "$SUMMARY_FILE"
 done
 
-# Stop monitoring
-kill $PIDSTAT_PID $IOSTAT_PID 2>/dev/null
-wait $PIDSTAT_PID $IOSTAT_PID 2>/dev/null
+# Stop monitoring (ignore exit status of monitoring processes)
+kill $PIDSTAT_PID $IOSTAT_PID 2>/dev/null || true
+wait $PIDSTAT_PID $IOSTAT_PID 2>/dev/null || true
 MONITOR_PIDS=""
 
 # Generate overall statistics
