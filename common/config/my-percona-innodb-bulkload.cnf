@@ -67,5 +67,8 @@ read_buffer_size = 16M
 # Increase max connections for parallel loaders
 max_connections = 200
 
+# Enable LOAD DATA LOCAL INFILE for bulk loading
+local_infile = 1
+
 [client]
 socket = /tmp/mysql_percona_innodb.sock

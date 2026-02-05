@@ -133,5 +133,8 @@ interactive_timeout = 28800
 sort_buffer_size = 64M
 read_buffer_size = 16M
 
+# Enable LOAD DATA LOCAL INFILE for bulk loading
+local_infile = 1
+
 [client]
 socket = /tmp/mysql_percona_myrocks.sock

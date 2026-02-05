@@ -22,5 +22,8 @@ general_log = 0
 # Disable Performance Schema (standard for benchmarks)
 performance_schema = OFF
 
+# Enable LOAD DATA LOCAL INFILE for bulk loading
+local_infile = 1
+
 [client]
 socket = /tmp/mysql_percona_innodb.sock
