@@ -305,8 +305,11 @@ else
 fi
 echo ""
 
-# Stop any running MySQL instances
-ensure_mysql_stopped "$ENGINE"
+# Stop ALL benchmark MySQL instances (not just current engine)
+# This prevents SSD busy errors when switching between engines
+for eng in vanilla-innodb percona-innodb percona-myrocks; do
+    ensure_mysql_stopped "$eng"
+done
 
 START_TIME=$(date +%s)
 

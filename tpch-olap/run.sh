@@ -220,9 +220,10 @@ STATS_FILE="${RESULT_DIR}/tpch_stats.txt"
     echo ""
 
     # Count successes and failures
-    ok_count=$(grep -c ",OK$" "$SUMMARY_FILE" 2>/dev/null || echo "0")
-    timeout_count=$(grep -c ",TIMEOUT$" "$SUMMARY_FILE" 2>/dev/null || echo "0")
-    error_count=$(grep -c ",ERROR$" "$SUMMARY_FILE" 2>/dev/null || echo "0")
+    # Note: grep -c returns exit code 1 when count is 0, so use || true to avoid triggering set -e
+    ok_count=$(grep -c ",OK$" "$SUMMARY_FILE" 2>/dev/null) || ok_count=0
+    timeout_count=$(grep -c ",TIMEOUT$" "$SUMMARY_FILE" 2>/dev/null) || timeout_count=0
+    error_count=$(grep -c ",ERROR$" "$SUMMARY_FILE" 2>/dev/null) || error_count=0
 
     echo "Results:"
     echo "  Successful queries: $ok_count"
