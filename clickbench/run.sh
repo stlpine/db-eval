@@ -95,7 +95,7 @@ while IFS= read -r line; do
         continue
     fi
     QUERIES[$query_num]="$line"
-    ((query_num++))
+    query_num=$((query_num + 1))
 done < "$QUERIES_FILE"
 
 log_info "Loaded ${#QUERIES[@]} queries"
