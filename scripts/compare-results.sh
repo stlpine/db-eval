@@ -58,6 +58,142 @@ log_info "InnoDB: $INNODB_DIR"
 log_info "MyRocks: $MYROCKS_DIR"
 log_info "Output: $COMPARISON_DIR"
 
+# ============================================================================
+# Resource utilization comparison helpers
+# ============================================================================
+
+# Compare two resource_summary.csv files side by side
+# Usage: compare_resource_summaries <file1> <file2> <label1> <label2>
+compare_resource_summaries() {
+    local file1="$1"
+    local file2="$2"
+    local label1="$3"
+    local label2="$4"
+
+    if [ ! -f "$file1" ] && [ ! -f "$file2" ]; then
+        echo "    (Resource utilization data not available)"
+        return
+    fi
+    if [ ! -f "$file1" ]; then
+        echo "    (Missing: $file1)"
+        return
+    fi
+    if [ ! -f "$file2" ]; then
+        echo "    (Missing: $file2)"
+        return
+    fi
+
+    awk -F, -v l1="$label1" -v l2="$label2" '
+    BEGIN {
+        n = 0
+        # CPU metrics
+        key[n]="cpu,user_pct";      lbl[n]="CPU user";          unit[n]="%";    sc[n]=0; n++
+        key[n]="cpu,system_pct";    lbl[n]="CPU system";        unit[n]="%";    sc[n]=0; n++
+        key[n]="cpu,iowait_pct";    lbl[n]="CPU iowait";        unit[n]="%";    sc[n]=0; n++
+        key[n]="cpu,idle_pct";      lbl[n]="CPU idle";          unit[n]="%";    sc[n]=0; n++
+        # IO metrics
+        key[n]="io,read_iops";      lbl[n]="Read IOPS";        unit[n]="";     sc[n]=0; n++
+        key[n]="io,write_iops";     lbl[n]="Write IOPS";       unit[n]="";     sc[n]=0; n++
+        key[n]="io,read_kbps";      lbl[n]="Read throughput";   unit[n]="MB/s"; sc[n]=1024; n++
+        key[n]="io,write_kbps";     lbl[n]="Write throughput";  unit[n]="MB/s"; sc[n]=1024; n++
+        key[n]="io,read_await_ms";  lbl[n]="Read latency";     unit[n]="ms";   sc[n]=0; n++
+        key[n]="io,write_await_ms"; lbl[n]="Write latency";    unit[n]="ms";   sc[n]=0; n++
+        key[n]="io,queue_depth";    lbl[n]="Queue depth";      unit[n]="";     sc[n]=0; n++
+        key[n]="io,util_pct";       lbl[n]="Disk utilization";  unit[n]="%";    sc[n]=0; n++
+        # Memory metrics
+        key[n]="mem,free_kb";       lbl[n]="Free memory";      unit[n]="MB";   sc[n]=1024; n++
+        key[n]="mem,cache_kb";      lbl[n]="Page cache";       unit[n]="MB";   sc[n]=1024; n++
+        key[n]="mem,swap_in_ps";    lbl[n]="Swap in";          unit[n]="/s";   sc[n]=0; n++
+        key[n]="mem,swap_out_ps";   lbl[n]="Swap out";         unit[n]="/s";   sc[n]=0; n++
+        # System metrics
+        key[n]="sys,runqueue_avg";  lbl[n]="Run queue";        unit[n]="";     sc[n]=0; n++
+        key[n]="sys,blocked_avg";   lbl[n]="Blocked procs";    unit[n]="";     sc[n]=0; n++
+        total = n
+    }
+    FNR == 1 { fnum++; next }
+    fnum == 1 { d1[$1","$2] = $3 }
+    fnum == 2 { d2[$1","$2] = $3 }
+    END {
+        fmt = "    %-22s %14s %14s  %s\n"
+        printf fmt, "Metric", l1, l2, "Unit"
+        printf fmt, "----------------------", "--------------", "--------------", "----"
+
+        last_cat = ""
+        for (i = 0; i < total; i++) {
+            k = key[i]
+            split(k, p, ",")
+            if (p[1] != last_cat && last_cat != "") printf "\n"
+            last_cat = p[1]
+
+            v1 = (k in d1) ? d1[k]+0 : -1
+            v2 = (k in d2) ? d2[k]+0 : -1
+            if (v1 < 0 && v2 < 0) continue
+
+            if (sc[i] > 0) {
+                if (v1 >= 0) v1 = v1 / sc[i]
+                if (v2 >= 0) v2 = v2 / sc[i]
+            }
+
+            s1 = (v1 >= 0) ? sprintf("%14.1f", v1) : sprintf("%14s", "N/A")
+            s2 = (v2 >= 0) ? sprintf("%14.1f", v2) : sprintf("%14s", "N/A")
+            printf "    %-22s %s %s  %s\n", lbl[i], s1, s2, unit[i]
+        }
+    }
+    ' "$file1" "$file2"
+}
+
+# Discover and compare all resource summary files between two result directories
+# Usage: compare_all_resource_summaries <dir1> <dir2> <label1> <label2>
+compare_all_resource_summaries() {
+    local dir1="$1"
+    local dir2="$2"
+    local label1="$3"
+    local label2="$4"
+
+    echo "==================== Resource Utilization Comparison ===================="
+    echo ""
+
+    local found=0
+
+    # Iterate over resource summary files from dir1
+    for f1 in "${dir1}"/*_resource_summary.csv; do
+        [ -f "$f1" ] || continue
+        local base
+        base=$(basename "$f1")
+        local f2="${dir2}/${base}"
+        local prefix="${base%_resource_summary.csv}"
+
+        echo "--- ${prefix} ---"
+        echo ""
+        compare_resource_summaries "$f1" "$f2" "$label1" "$label2"
+        echo ""
+        found=1
+    done
+
+    # Check dir2 for files not in dir1
+    for f2 in "${dir2}"/*_resource_summary.csv; do
+        [ -f "$f2" ] || continue
+        local base
+        base=$(basename "$f2")
+        local f1="${dir1}/${base}"
+        [ -f "$f1" ] && continue  # already handled
+        local prefix="${base%_resource_summary.csv}"
+
+        echo "--- ${prefix} ---"
+        echo ""
+        compare_resource_summaries "$f1" "$f2" "$label1" "$label2"
+        echo ""
+        found=1
+    done
+
+    if [ $found -eq 0 ]; then
+        echo "(No resource utilization data found. Re-run benchmarks to collect.)"
+        echo ""
+    fi
+}
+
+# ============================================================================
+
 compare_sysbench() {
     local innodb_csv="${INNODB_DIR}/consolidated_results.csv"
     local myrocks_csv="${MYROCKS_DIR}/consolidated_results.csv"
@@ -137,6 +273,9 @@ compare_sysbench() {
         printf "%-30s %12s %12s %12s\n" "Workload_Threads" "Lat [1]" "Lat [2]" "Reduction"
         echo "---------------------------------------------------------------------"
         echo "$latency_data"
+
+        echo ""
+        compare_all_resource_summaries "$INNODB_DIR" "$MYROCKS_DIR" "$engine1" "$engine2"
 
     } | tee "${COMPARISON_DIR}/comparison_report.txt"
 }
@@ -226,6 +365,9 @@ compare_tpcc() {
         else
             echo "(Latency data not available - run benchmark again to collect latency)"
         fi
+
+        echo ""
+        compare_all_resource_summaries "$INNODB_DIR" "$MYROCKS_DIR" "$engine1" "$engine2"
 
     } | tee "${COMPARISON_DIR}/comparison_report.txt"
 }
@@ -335,6 +477,9 @@ compare_sysbench_tpcc() {
         echo "-------------------------------------------------"
         echo "$latency_data"
 
+        echo ""
+        compare_all_resource_summaries "$INNODB_DIR" "$MYROCKS_DIR" "$engine1" "$engine2"
+
     } | tee "${COMPARISON_DIR}/comparison_report.txt"
 }
 
@@ -439,6 +584,9 @@ compare_clickbench() {
                 printf "Overall speedup (geomean): %.2fx\n", innodb_geomean / myrocks_geomean
             }
         }' "${COMPARISON_DIR}/merged_results.csv"
+
+        echo ""
+        compare_all_resource_summaries "$INNODB_DIR" "$MYROCKS_DIR" "InnoDB" "MyRocks"
 
     } | tee "${COMPARISON_DIR}/comparison_report.txt"
 }
@@ -550,6 +698,9 @@ compare_tpch_olap() {
                 printf "Overall speedup (geomean): %.2fx\n", innodb_geomean / myrocks_geomean
             }
         }' "${COMPARISON_DIR}/merged_results.csv"
+
+        echo ""
+        compare_all_resource_summaries "$INNODB_DIR" "$MYROCKS_DIR" "InnoDB" "MyRocks"
 
     } | tee "${COMPARISON_DIR}/comparison_report.txt"
 }

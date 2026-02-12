@@ -7,6 +7,7 @@ set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../common/config/env.sh"
+source "${SCRIPT_DIR}/../scripts/monitor.sh"
 
 usage() {
     echo "Usage: $0 <engine> <result_dir>"
@@ -58,26 +59,10 @@ log_info "Results directory: $RESULT_DIR"
 
 mkdir -p "$RESULT_DIR"
 
-# Track background monitoring PIDs for cleanup
-MONITOR_PIDS=""
-
-cleanup_monitors() {
-    if [ -n "$MONITOR_PIDS" ]; then
-        kill $MONITOR_PIDS 2>/dev/null
-        wait $MONITOR_PIDS 2>/dev/null
-    fi
-}
-
 trap cleanup_monitors EXIT
 
-# Start monitoring
-pidstat -u -r -d 1 > "${RESULT_DIR}/clickbench_pidstat.txt" 2>&1 &
-PIDSTAT_PID=$!
-
-iostat -x 1 > "${RESULT_DIR}/clickbench_iostat.txt" 2>&1 &
-IOSTAT_PID=$!
-
-MONITOR_PIDS="$PIDSTAT_PID $IOSTAT_PID"
+# Start monitoring (pidstat, iostat, mpstat, vmstat)
+start_monitors "$RESULT_DIR" "clickbench"
 
 # Initialize results files
 QUERY_TIMES_FILE="${RESULT_DIR}/clickbench_query_times.csv"
@@ -201,10 +186,9 @@ for ((q=0; q<${#QUERIES[@]}; q++)); do
     echo "$((q+1)),$cold_time,$warm1_time,$warm2_time,$min_time,$overall_status" >> "$SUMMARY_FILE"
 done
 
-# Stop monitoring (ignore exit status of monitoring processes)
-kill $PIDSTAT_PID $IOSTAT_PID 2>/dev/null || true
-wait $PIDSTAT_PID $IOSTAT_PID 2>/dev/null || true
-MONITOR_PIDS=""
+# Stop monitoring and generate resource utilization summary
+stop_monitors
+generate_resource_summary "$RESULT_DIR" "clickbench"
 
 # Generate overall statistics
 log_info "Generating summary statistics..."

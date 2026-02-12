@@ -4,6 +4,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../common/config/env.sh"
+source "${SCRIPT_DIR}/../scripts/monitor.sh"
 
 usage() {
     echo "Usage: $0 <engine> <threads> <result_dir>"
@@ -51,16 +52,6 @@ fi
 
 log_info "Running sysbench-tpcc: engine=$ENGINE, threads=$THREADS, result_dir=$RESULT_DIR"
 
-# Track background monitoring PIDs for cleanup
-MONITOR_PIDS=""
-
-cleanup_monitors() {
-    if [ -n "$MONITOR_PIDS" ]; then
-        kill $MONITOR_PIDS 2>/dev/null
-        wait $MONITOR_PIDS 2>/dev/null
-    fi
-}
-
 trap cleanup_monitors EXIT
 
 # Function to run a single benchmark
@@ -68,20 +59,11 @@ run_benchmark() {
     local threads=$1
     local result_file="${RESULT_DIR}/tpcc_threads${threads}.txt"
     local stats_file="${RESULT_DIR}/tpcc_threads${threads}_stats.csv"
-    local pidstat_file="${RESULT_DIR}/tpcc_threads${threads}_pidstat.txt"
-    local iostat_file="${RESULT_DIR}/tpcc_threads${threads}_iostat.txt"
 
     log_info "Running sysbench-tpcc with $threads threads..."
 
-    # Start monitoring
-    pidstat -u -r -d 1 > "$pidstat_file" 2>&1 &
-    local pidstat_pid=$!
-
-    iostat -x 1 > "$iostat_file" 2>&1 &
-    local iostat_pid=$!
-
-    # Track PIDs for cleanup on exit
-    MONITOR_PIDS="$pidstat_pid $iostat_pid"
+    # Start monitoring (pidstat, iostat, mpstat, vmstat)
+    start_monitors "$RESULT_DIR" "tpcc_threads${threads}"
 
     # Run benchmark (cd to sysbench-tpcc dir so Lua can find tpcc_common.lua)
     (cd "$SYSBENCH_TPCC_DIR" && sysbench ./tpcc.lua \
@@ -98,10 +80,9 @@ run_benchmark() {
 
     local bench_exit_code=$?
 
-    # Stop monitoring
-    kill $pidstat_pid $iostat_pid 2>/dev/null
-    wait $pidstat_pid $iostat_pid 2>/dev/null
-    MONITOR_PIDS=""
+    # Stop monitoring and generate resource utilization summary
+    stop_monitors
+    generate_resource_summary "$RESULT_DIR" "tpcc_threads${threads}"
 
     if [ $bench_exit_code -ne 0 ]; then
         log_error "Benchmark failed for $threads threads"

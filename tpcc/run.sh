@@ -4,6 +4,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../common/config/env.sh"
+source "${SCRIPT_DIR}/../scripts/monitor.sh"
 
 usage() {
     echo "Usage: $0 <engine> <threads> <result_dir>"
@@ -51,16 +52,6 @@ fi
 
 log_info "Running TPC-C: engine=$ENGINE, threads=$THREADS, result_dir=$RESULT_DIR"
 
-# Track background monitoring PIDs for cleanup
-MONITOR_PIDS=""
-
-cleanup_monitors() {
-    if [ -n "$MONITOR_PIDS" ]; then
-        kill $MONITOR_PIDS 2>/dev/null
-        wait $MONITOR_PIDS 2>/dev/null
-    fi
-}
-
 trap cleanup_monitors EXIT
 
 # Function to run a single benchmark
@@ -72,15 +63,8 @@ run_benchmark() {
     local result_file="${RESULT_DIR}/tpcc_threads${threads}.txt"
     local stats_file="${RESULT_DIR}/tpcc_threads${threads}_stats.csv"
 
-    # Start monitoring CPU and I/O
-    pidstat -u -r -d 1 > "${RESULT_DIR}/tpcc_threads${threads}_pidstat.txt" 2>&1 &
-    local pidstat_pid=$!
-
-    iostat -x 1 > "${RESULT_DIR}/tpcc_threads${threads}_iostat.txt" 2>&1 &
-    local iostat_pid=$!
-
-    # Track PIDs for cleanup on exit
-    MONITOR_PIDS="$pidstat_pid $iostat_pid"
+    # Start monitoring (pidstat, iostat, mpstat, vmstat)
+    start_monitors "$RESULT_DIR" "tpcc_threads${threads}"
 
     # Run TPC-C
     {
@@ -116,10 +100,9 @@ run_benchmark() {
 
     } > "$result_file"
 
-    # Stop monitoring
-    kill $pidstat_pid $iostat_pid 2>/dev/null
-    wait $pidstat_pid $iostat_pid 2>/dev/null
-    MONITOR_PIDS=""
+    # Stop monitoring and generate resource utilization summary
+    stop_monitors
+    generate_resource_summary "$RESULT_DIR" "tpcc_threads${threads}"
 
     # Extract key metrics
     # TPC-C output format:
