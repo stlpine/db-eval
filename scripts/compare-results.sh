@@ -413,34 +413,29 @@ compare_clickbench() {
         echo "==================== Performance Summary ===================="
         echo ""
 
-        # Calculate totals and geometric mean
+        # Calculate totals and geometric mean (only over queries both engines completed)
         awk -F',' 'NR>1 {
-            if ($5 != "N/A" && $5 > 0) {
-                innodb_total += $5
-                innodb_log_sum += log($5)
-                innodb_count++
-            }
-            if ($10 != "N/A" && $10 > 0) {
-                myrocks_total += $10
-                myrocks_log_sum += log($10)
-                myrocks_count++
+            innodb_ok = ($5 != "N/A" && $5 > 0)
+            myrocks_ok = ($10 != "N/A" && $10 > 0)
+
+            if (innodb_ok) innodb_total += $5
+            if (myrocks_ok) myrocks_total += $10
+
+            # Geometric mean: only count queries completed by BOTH engines
+            if (innodb_ok && myrocks_ok) {
+                both_innodb_log += log($5)
+                both_myrocks_log += log($10)
+                both_count++
             }
         }
         END {
             printf "Total best time (InnoDB):  %.2f seconds\n", innodb_total
             printf "Total best time (MyRocks): %.2f seconds\n", myrocks_total
-            if (innodb_count > 0) {
-                innodb_geomean = exp(innodb_log_sum / innodb_count)
-                printf "Geometric mean (InnoDB):   %.3f seconds\n", innodb_geomean
-            }
-            if (myrocks_count > 0) {
-                myrocks_geomean = exp(myrocks_log_sum / myrocks_count)
-                printf "Geometric mean (MyRocks):  %.3f seconds\n", myrocks_geomean
-            }
-            if (innodb_total > 0 && myrocks_total > 0) {
-                printf "Overall speedup (total):   %.2fx\n", innodb_total / myrocks_total
-            }
-            if (innodb_count > 0 && myrocks_count > 0) {
+            if (both_count > 0) {
+                innodb_geomean = exp(both_innodb_log / both_count)
+                myrocks_geomean = exp(both_myrocks_log / both_count)
+                printf "Geometric mean (InnoDB):   %.3f seconds (%d queries)\n", innodb_geomean, both_count
+                printf "Geometric mean (MyRocks):  %.3f seconds (%d queries)\n", myrocks_geomean, both_count
                 printf "Overall speedup (geomean): %.2fx\n", innodb_geomean / myrocks_geomean
             }
         }' "${COMPARISON_DIR}/merged_results.csv"
@@ -529,34 +524,29 @@ compare_tpch_olap() {
         echo "==================== Performance Summary ===================="
         echo ""
 
-        # Calculate totals and geometric mean
+        # Calculate totals and geometric mean (only over queries both engines completed)
         awk -F',' 'NR>1 {
-            if ($5 != "N/A" && $5 > 0) {
-                innodb_total += $5
-                innodb_log_sum += log($5)
-                innodb_count++
-            }
-            if ($10 != "N/A" && $10 > 0) {
-                myrocks_total += $10
-                myrocks_log_sum += log($10)
-                myrocks_count++
+            innodb_ok = ($5 != "N/A" && $5 > 0)
+            myrocks_ok = ($10 != "N/A" && $10 > 0)
+
+            if (innodb_ok) innodb_total += $5
+            if (myrocks_ok) myrocks_total += $10
+
+            # Geometric mean: only count queries completed by BOTH engines
+            if (innodb_ok && myrocks_ok) {
+                both_innodb_log += log($5)
+                both_myrocks_log += log($10)
+                both_count++
             }
         }
         END {
             printf "Total best time (InnoDB):  %.2f seconds\n", innodb_total
             printf "Total best time (MyRocks): %.2f seconds\n", myrocks_total
-            if (innodb_count > 0) {
-                innodb_geomean = exp(innodb_log_sum / innodb_count)
-                printf "Geometric mean (InnoDB):   %.3f seconds\n", innodb_geomean
-            }
-            if (myrocks_count > 0) {
-                myrocks_geomean = exp(myrocks_log_sum / myrocks_count)
-                printf "Geometric mean (MyRocks):  %.3f seconds\n", myrocks_geomean
-            }
-            if (innodb_total > 0 && myrocks_total > 0) {
-                printf "Overall speedup (total):   %.2fx\n", innodb_total / myrocks_total
-            }
-            if (innodb_count > 0 && myrocks_count > 0) {
+            if (both_count > 0) {
+                innodb_geomean = exp(both_innodb_log / both_count)
+                myrocks_geomean = exp(both_myrocks_log / both_count)
+                printf "Geometric mean (InnoDB):   %.3f seconds (%d queries)\n", innodb_geomean, both_count
+                printf "Geometric mean (MyRocks):  %.3f seconds (%d queries)\n", myrocks_geomean, both_count
                 printf "Overall speedup (geomean): %.2fx\n", innodb_geomean / myrocks_geomean
             }
         }' "${COMPARISON_DIR}/merged_results.csv"
