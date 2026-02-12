@@ -96,13 +96,13 @@ export SYSBENCH_TPCC_USE_FK="0"           # Disable foreign keys for fair MyRock
 export CLICKBENCH_DATA_URL="https://datasets.clickhouse.com/hits_compatible/hits.tsv.gz"
 export CLICKBENCH_DATA_DIR="${SSD_MOUNT}/clickbench-data"
 export CLICKBENCH_QUERY_RUNS="3"           # cold, warm1, warm2
-export CLICKBENCH_QUERY_TIMEOUT="600"      # 10 min per query
+export CLICKBENCH_QUERY_TIMEOUT="86400"    # 24 hours (effectively no timeout)
 
 # TPC-H Configuration (OLAP)
 export TPCH_SCALE_FACTOR="100"             # SF100 = ~100GB data
 export TPCH_DATA_DIR="${SSD_MOUNT}/tpch-data"
 export TPCH_QUERY_RUNS="3"                 # cold, warm1, warm2
-export TPCH_QUERY_TIMEOUT="600"            # 10 min per query
+export TPCH_QUERY_TIMEOUT="86400"          # 24 hours (effectively no timeout)
 
 # Results Directory
 export RESULTS_DIR="$(dirname $(dirname $(dirname $(readlink -f "${BASH_SOURCE[0]}"))))/results"
