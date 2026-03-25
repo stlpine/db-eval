@@ -104,6 +104,13 @@ export TPCH_DATA_DIR="${SSD_MOUNT}/tpch-data"
 export TPCH_QUERY_RUNS="3"                 # cold, warm1, warm2
 export TPCH_QUERY_TIMEOUT="86400"          # 24 hours (effectively no timeout)
 
+# Profiling Configuration
+export FLAMEGRAPH_DIR="${HOME}/FlameGraph"
+export PROFILING_WARMUP_DURATION="60"    # seconds of TPC-C warmup before recording starts
+export PROFILING_RECORD_DURATION="60"    # seconds to run perf record / perf stat
+export PROFILING_OLAP_QUERIES="1 6 12 19" # TPC-H queries to profile (scan-heavy)
+export PROFILING_PERF_CONTEXT_LEVEL="3"  # RocksDB perf context verbosity (3 = full counters)
+
 # Results Directory
 export RESULTS_DIR="$(dirname $(dirname $(dirname $(readlink -f "${BASH_SOURCE[0]}"))))/results"
 
