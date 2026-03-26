@@ -105,7 +105,9 @@ export TPCH_QUERY_RUNS="3"                 # cold, warm1, warm2
 export TPCH_QUERY_TIMEOUT="86400"          # 24 hours (effectively no timeout)
 
 # Profiling Configuration
-export FLAMEGRAPH_DIR="${HOME}/FlameGraph"
+# When run under sudo, SUDO_USER holds the original user; fall back to $USER
+_REAL_HOME="$(getent passwd "${SUDO_USER:-$USER}" | cut -d: -f6)"
+export FLAMEGRAPH_DIR="${_REAL_HOME}/FlameGraph"
 export PROFILING_WARMUP_DURATION="60"    # seconds of TPC-C warmup before recording starts
 export PROFILING_RECORD_DURATION="60"    # seconds to run perf record / perf stat
 export PROFILING_OLAP_QUERIES="1 6 12 19" # TPC-H queries to profile (scan-heavy)
