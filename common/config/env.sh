@@ -2,11 +2,10 @@
 # Common environment configuration for MySQL benchmarking
 
 # Ensure proper terminal line discipline for subprocess output
-# This is critical when running under sudo/cgexec where terminal settings may not propagate properly
-# Note: opost must be enabled for onlcr to take effect
-if [ -t 1 ] || [ -t 0 ]; then
-    stty opost onlcr 2>/dev/null || true
-fi
+# Run unconditionally — stty fails silently when stdout is not a terminal.
+# Without onlcr, \n does not reset to column 0 inside sudo/cgexec subprocesses,
+# causing log lines to appear offset on the terminal.
+stty opost onlcr 2>/dev/null || true
 
 # Force line buffering and proper newline handling for piped/redirected output
 export PYTHONUNBUFFERED=1

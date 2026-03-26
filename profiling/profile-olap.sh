@@ -199,6 +199,7 @@ profile_query() {
     # Start perf record attached to mysqld
     local perf_data="${RESULT_DIR}/perf_q${q}.data"
     sudo perf record -F 99 -p "$MYSQLD_PID" --call-graph dwarf \
+        -e cpu_core/cycles/ \
         -o "$perf_data" -- sleep 86400 &
     PERF_PID=$!
     sleep 0.5   # let perf attach before query starts

@@ -253,11 +253,12 @@ PERF_DATA="${RESULT_DIR}/perf_oltp.data"
 PERF_STAT_OUT="${RESULT_DIR}/perf_stat_oltp.txt"
 
 sudo perf record -F 99 -p "$MYSQLD_PID" --call-graph dwarf \
+    -e cpu_core/cycles/ \
     -o "$PERF_DATA" -- sleep "$RECORD_DURATION" &
 PERF_RECORD_PID=$!
 
 sudo perf stat -p "$MYSQLD_PID" \
-    -e cycles,instructions,cache-misses,cache-references,LLC-load-misses,LLC-loads \
+    -e cpu_core/cycles/,cpu_core/instructions/,cpu_core/cache-misses/,cpu_core/cache-references/,cpu_core/LLC-load-misses/,cpu_core/LLC-loads/ \
     -- sleep "$RECORD_DURATION" \
     > "$PERF_STAT_OUT" 2>&1 &
 PERF_STAT_PID=$!
