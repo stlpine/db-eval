@@ -17,8 +17,8 @@
 #   - ~/FlameGraph cloned (brendangregg/FlameGraph)
 #   - linux-tools-$(uname -r) installed
 
-set -e
-set -o pipefail
+# Note: no set -e / set -o pipefail — mirrors tpcc/run.sh pattern.
+# Critical failures use explicit exit 1; perf/mysql pipelines are best-effort.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../common/config/env.sh"

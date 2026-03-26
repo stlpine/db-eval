@@ -17,8 +17,8 @@
 #   - ~/FlameGraph cloned (brendangregg/FlameGraph)
 #   - linux-tools-$(uname -r) installed
 
-set -e
-set -o pipefail
+# Note: no set -e / set -o pipefail — mirrors tpcc/run.sh pattern.
+# Critical failures use explicit exit 1; perf/mysql pipelines are best-effort.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../common/config/env.sh"
@@ -97,7 +97,9 @@ capture_data_profile() {
 }
 
 snapshot_perf_context_global() {
-    mysql --socket="$SOCKET" --batch --skip-column-names 2>/dev/null -e "
+    # Try information_schema table first; fall back to SHOW ENGINE ROCKSDB STATUS
+    local result
+    result=$(mysql --socket="$SOCKET" --batch --skip-column-names 2>/dev/null -e "
         SELECT variable_name, variable_value
         FROM information_schema.rocksdb_perf_context_global
         WHERE variable_name IN (
@@ -111,7 +113,17 @@ snapshot_perf_context_global() {
             'get_from_memtable_time',
             'get_from_output_files_time'
         )
-        ORDER BY variable_name;"
+        ORDER BY variable_name;") || true
+
+    if [ -n "$result" ]; then
+        echo "$result"
+    else
+        log_info "  rocksdb_perf_context_global unavailable, trying SHOW ENGINE ROCKSDB STATUS" >&2
+        mysql --socket="$SOCKET" --batch --skip-column-names 2>/dev/null -e "
+            SHOW ENGINE ROCKSDB STATUS;" \
+        | grep -E "internal_key_skipped_count|internal_delete_skipped_count|get_snapshot_time|block_read_count|block_read_byte|block_read_time|get_from_memtable_count|get_from_memtable_time|get_from_output_files_time" \
+        | awk '{print $1, $NF}' || true
+    fi
 }
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
@@ -229,7 +241,11 @@ log_info "Warmup done. Starting ${RECORD_DURATION}s recording window..."
 
 # ── Snapshot perf context before recording window ────────────────────────────
 
-BEFORE=$(snapshot_perf_context_global)
+PERF_CTX_BEFORE="${RESULT_DIR}/perf_ctx_before.tmp"
+PERF_CTX_AFTER="${RESULT_DIR}/perf_ctx_after.tmp"
+
+snapshot_perf_context_global > "$PERF_CTX_BEFORE" || true
+log_info "Perf context snapshot (before) captured"
 
 # ── perf record + perf stat concurrently during steady state ─────────────────
 
@@ -253,7 +269,7 @@ log_info "Recording window done."
 
 # ── Snapshot perf context after and compute delta ────────────────────────────
 
-AFTER=$(snapshot_perf_context_global)
+snapshot_perf_context_global > "$PERF_CTX_AFTER" || true
 
 PERF_CSV="${RESULT_DIR}/rocksdb_perf_context_delta.csv"
 echo "metric,before,after,delta" > "$PERF_CSV"
@@ -263,7 +279,7 @@ awk '
 BEGIN { n = 0 }
 NR == FNR { name[NR] = $1; bval[NR] = $2+0; n = NR; next }
 FNR <= n  { printf "%s,%d,%d,%d\n", name[FNR], bval[FNR], $2+0, $2+0-bval[FNR] }
-' <(echo "$BEFORE") <(echo "$AFTER") >> "$PERF_CSV"
+' "$PERF_CTX_BEFORE" "$PERF_CTX_AFTER" >> "$PERF_CSV"
 
 log_info "RocksDB perf context delta:"
 column -t -s, "$PERF_CSV"
