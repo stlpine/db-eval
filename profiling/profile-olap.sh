@@ -134,6 +134,56 @@ start_mysql_cold
 verify_storage_engine
 capture_data_profile "$RESULT_DIR"
 
+# ── Log profiling configuration (mirrors run-benchmark.sh pattern) ────────────
+
+CONFIG_LOG="${RESULT_DIR}/profiling_config.log"
+log_info "Logging configuration to: $CONFIG_LOG"
+{
+    echo "============================================================"
+    echo "PROFILING CONFIGURATION LOG"
+    echo "Generated: $(date)"
+    echo "Engine: $ENGINE"
+    echo "Workload: OLAP (TPC-H)"
+    echo "============================================================"
+    echo ""
+    echo "============================================================"
+    echo "SYSTEM INFORMATION"
+    echo "============================================================"
+    echo "Hostname: $(hostname)"
+    echo "Kernel: $(uname -r)"
+    echo "OS: $(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')"
+    echo ""
+    echo "CPU Info:"
+    lscpu 2>/dev/null | grep -E "^(Model name|Socket|Core|Thread|CPU\(s\)|CPU MHz)"
+    echo ""
+    echo "Memory Info:"
+    free -h 2>/dev/null
+    echo ""
+    echo "Disk Info:"
+    df -h "$SSD_MOUNT" 2>/dev/null
+    echo ""
+    echo "============================================================"
+    echo "PROFILING PARAMETERS"
+    echo "============================================================"
+    echo "BENCHMARK_DB: $BENCHMARK_DB"
+    echo "TPCH_SCALE_FACTOR: $TPCH_SCALE_FACTOR"
+    echo "PROFILING_OLAP_QUERIES: $QUERIES"
+    echo "PROFILING_PERF_CONTEXT_LEVEL: $PROFILING_PERF_CONTEXT_LEVEL"
+    echo "CGROUP_MEMORY_LIMIT: $CGROUP_MEMORY_LIMIT"
+    echo "MYROCKS_BLOOM_FILTER: $MYROCKS_BLOOM_FILTER"
+    echo "FLAMEGRAPH_DIR: $FLAMEGRAPH_DIR"
+    echo "PERF_EVENT: cpu_core/cycles/"
+    echo "PERF_FREQ: 99 Hz"
+    echo "PERF_CALL_GRAPH: dwarf"
+    echo ""
+    echo "============================================================"
+    echo "MYSQL SERVER VARIABLES"
+    echo "============================================================"
+    mysql --socket="$SOCKET" -e "SHOW VARIABLES;" 2>/dev/null
+    echo ""
+} > "$CONFIG_LOG" 2>&1
+log_info "Configuration logged"
+
 MYSQLD_PID=$(cat "${MYSQL_PID_PERCONA_MYROCKS}" 2>/dev/null || true)
 if [ -z "$MYSQLD_PID" ] || ! kill -0 "$MYSQLD_PID" 2>/dev/null; then
     log_error "Cannot find mysqld PID"
