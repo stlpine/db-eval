@@ -217,27 +217,20 @@ profile_query() {
 
     local raw_output
     raw_output=$(mysql --socket="$SOCKET" "$BENCHMARK_DB" \
-        --batch --skip-column-names 2>/dev/null <<SQL
+        --batch --skip-column-names --force 2>/dev/null <<SQL
 FLUSH STATUS;
 ${query_sql}
 SELECT variable_name, variable_value
     FROM information_schema.rocksdb_perf_context
-    WHERE variable_name IN (
-        'internal_key_skipped_count',
-        'internal_delete_skipped_count',
-        'get_snapshot_time',
-        'block_read_count',
-        'block_read_byte',
-        'block_read_time',
-        'get_from_memtable_count',
-        'get_from_memtable_time',
-        'get_from_output_files_time'
-    )
     ORDER BY variable_name;
-SHOW SESSION STATUS LIKE 'Handler_read_rnd_next';
+SHOW SESSION STATUS LIKE 'Handler_read_first';
 SHOW SESSION STATUS LIKE 'Handler_read_next';
+SHOW SESSION STATUS LIKE 'Handler_read_rnd_next';
 SQL
     )
+
+    # Save raw output for debugging (variable names / values may differ by version)
+    echo "$raw_output" > "${RESULT_DIR}/perf_ctx_raw_q${q}.txt"
 
     end_time=$(date +%s.%N)
     elapsed=$(echo "$end_time - $start_time" | bc)
@@ -260,10 +253,12 @@ SQL
     local gfoft; gfoft=$(_get "get_from_output_files_time")
 
     # Handler rows: proxy for rows scanned
-    local h_rnd h_nxt rows_scanned
-    h_rnd=$(echo "$raw_output" | awk '/Handler_read_rnd_next/{print $2}')
-    h_nxt=$(echo "$raw_output" | awk '/Handler_read_next/{print $2}')
-    rows_scanned=$(( ${h_rnd:-0} + ${h_nxt:-0} ))
+    # MyRocks uses read_first+read_next (PK index scan); InnoDB heap scans use read_rnd_next
+    local h_first h_nxt h_rnd rows_scanned
+    h_first=$(echo "$raw_output" | awk '$1=="Handler_read_first"{print $2}')
+    h_nxt=$(echo "$raw_output"   | awk '$1=="Handler_read_next"{print $2}')
+    h_rnd=$(echo "$raw_output"   | awk '$1=="Handler_read_rnd_next"{print $2}')
+    rows_scanned=$(( ${h_first:-0} + ${h_nxt:-0} + ${h_rnd:-0} ))
 
     printf "  elapsed=%.1fs | rows_scanned=%s | key_skipped=%s | block_reads=%s\n" \
         "$elapsed" "$rows_scanned" "${iksc:-0}" "${brc:-0}"
