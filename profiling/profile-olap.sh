@@ -322,7 +322,7 @@ SQL
         sudo perf script -i "$perf_data" 2>/dev/null \
             | "${FLAMEGRAPH_DIR}/stackcollapse-perf.pl" \
             | "${FLAMEGRAPH_DIR}/flamegraph.pl" \
-                --title "MyRocks OLAP Q${q} (${elapsed}s)" \
+                --title "MyRocks OLAP Q${q} ($(printf '%.1f' "$elapsed")s)" \
                 --width 1800 \
             > "$svg" || log_error "  Flamegraph generation failed for Q${q}"
         log_info "  Flamegraph: $svg"
