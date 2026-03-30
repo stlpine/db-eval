@@ -10,10 +10,12 @@
 # Usage: $0 [options]
 #
 # Options:
-#   -t, --type <type>       Profiling type: oltp | olap  (required)
-#   -q, --queries <list>    OLAP only: space-separated TPC-H query numbers
-#                           (default: PROFILING_OLAP_QUERIES from env.sh, "1 6 12 19")
-#   --threads <n>           OLTP only: TPC-C thread count (default: 32)
+#   -t, --type <type>       Profiling type: oltp | olap | sysbench | clickbench  (required)
+#   -q, --queries <list>    olap: TPC-H query numbers (default: "1 6 12 19")
+#                           clickbench: query numbers (default: "3 8 14 17")
+#   --threads <n>           oltp/sysbench: thread count (default: 32)
+#   --workload <name>       sysbench only: workload name (default: oltp_read_only)
+#                           Options: oltp_read_only, oltp_read_write, oltp_write_only
 #   --skip-prepare          Skip data preparation (data must already exist on SSD)
 #   --full                  Force full data preparation (ignore backup)
 #   -h, --help
@@ -22,6 +24,10 @@
 #   $0 -t olap
 #   $0 -t olap -q "1 6"
 #   $0 -t oltp --threads 16
+#   $0 -t sysbench
+#   $0 -t sysbench --workload oltp_read_write --threads 16
+#   $0 -t clickbench
+#   $0 -t clickbench -q "3 8 14 17 34"
 #   $0 -t olap --skip-prepare
 #   $0 -t oltp --full
 
@@ -39,10 +45,12 @@ usage() {
 Usage: $0 [options]
 
 Options:
-    -t, --type <type>       Profiling type (required): oltp | olap
-    -q, --queries <list>    OLAP: TPC-H query numbers, space-separated
-                            (default: "${PROFILING_OLAP_QUERIES}")
-    --threads <n>           OLTP: TPC-C thread count (default: 32)
+    -t, --type <type>       Profiling type (required): oltp | olap | sysbench | clickbench
+    -q, --queries <list>    olap: TPC-H query numbers, space-separated (default: "${PROFILING_OLAP_QUERIES}")
+                            clickbench: query numbers, space-separated (default: "3 8 14 17")
+    --threads <n>           oltp/sysbench: thread count (default: 32)
+    --workload <name>       sysbench: workload name (default: oltp_read_only)
+                            Options: oltp_read_only, oltp_read_write, oltp_write_only
     --skip-prepare          Skip data preparation (data must already exist)
     --full                  Force full data preparation (ignore backup)
     -h, --help
@@ -51,6 +59,10 @@ Examples:
     $0 -t olap
     $0 -t olap -q "1 6"
     $0 -t oltp --threads 16
+    $0 -t sysbench
+    $0 -t sysbench --workload oltp_read_write --threads 16
+    $0 -t clickbench
+    $0 -t clickbench -q "3 8 14 17 34"
     $0 -t olap --skip-prepare
 EOF
     exit 1
@@ -59,8 +71,9 @@ EOF
 # ── Argument parsing ──────────────────────────────────────────────────────────
 
 TYPE=""
-QUERIES="${PROFILING_OLAP_QUERIES}"
+QUERIES=""
 THREADS="32"
+WORKLOAD="oltp_read_only"
 SKIP_PREPARE=false
 FORCE_FULL=false
 
@@ -76,6 +89,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --threads)
             THREADS="$2"
+            shift 2
+            ;;
+        --workload)
+            WORKLOAD="$2"
             shift 2
             ;;
         --skip-prepare)
@@ -97,15 +114,27 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [ -z "$TYPE" ]; then
-    log_error "Profiling type is required (-t oltp|olap)"
+    log_error "Profiling type is required (-t oltp|olap|sysbench|clickbench)"
     usage
 fi
 
 case $TYPE in
-    oltp) PREPARE_BENCHMARK="tpcc" ;;
-    olap) PREPARE_BENCHMARK="tpch-olap" ;;
+    oltp)
+        PREPARE_BENCHMARK="tpcc"
+        ;;
+    olap)
+        PREPARE_BENCHMARK="tpch-olap"
+        [ -z "$QUERIES" ] && QUERIES="${PROFILING_OLAP_QUERIES}"
+        ;;
+    sysbench)
+        PREPARE_BENCHMARK="sysbench"
+        ;;
+    clickbench)
+        PREPARE_BENCHMARK="clickbench"
+        [ -z "$QUERIES" ] && QUERIES="3 8 14 17"
+        ;;
     *)
-        log_error "Invalid type: $TYPE (must be oltp or olap)"
+        log_error "Invalid type: $TYPE (must be oltp, olap, sysbench, or clickbench)"
         usage
         ;;
 esac
@@ -126,11 +155,18 @@ log_info "MyRocks Profiling with Cgroup Memory Limit"
 log_info "=========================================="
 log_info "Engine        : ${ENGINE}"
 log_info "Type          : ${TYPE}"
-if [ "$TYPE" = "olap" ]; then
-    log_info "Queries       : ${QUERIES}"
-else
-    log_info "Threads       : ${THREADS}"
-fi
+case $TYPE in
+    olap|clickbench)
+        log_info "Queries       : ${QUERIES}"
+        ;;
+    sysbench)
+        log_info "Workload      : ${WORKLOAD}"
+        log_info "Threads       : ${THREADS}"
+        ;;
+    oltp)
+        log_info "Threads       : ${THREADS}"
+        ;;
+esac
 log_info "Cgroup        : ${CGROUP_NAME}"
 log_info "Memory limit  : ${MEMORY_LIMIT}"
 log_info "Warmup        : ${PROFILING_WARMUP_DURATION}s"
@@ -177,6 +213,16 @@ case $TYPE in
         sudo -E cgexec -g memory:"${CGROUP_NAME}" \
             bash "${SCRIPT_DIR}/../profiling/profile-oltp.sh" \
             "$THREADS"
+        ;;
+    sysbench)
+        sudo -E cgexec -g memory:"${CGROUP_NAME}" \
+            bash "${SCRIPT_DIR}/../profiling/profile-sysbench.sh" \
+            "$WORKLOAD" "$THREADS"
+        ;;
+    clickbench)
+        sudo -E cgexec -g memory:"${CGROUP_NAME}" \
+            bash "${SCRIPT_DIR}/../profiling/profile-clickbench.sh" \
+            "$QUERIES"
         ;;
 esac
 
