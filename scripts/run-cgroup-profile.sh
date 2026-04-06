@@ -1,20 +1,20 @@
 #!/bin/bash
-# Run MyRocks profiling with cgroup memory limit
+# Run profiling with cgroup memory limit
 #
 # Mirrors run-cgroup.sh structure exactly:
 #   Phase 1 (optional): prepare-data.sh WITHOUT cgroup  (SSD reset + data load)
 #   Phase 2:            profile-<type>.sh  WITH cgroup   (memory-limited profiling)
 #
-# Engine is always percona-myrocks (profiling is MyRocks-specific).
-#
 # Usage: $0 [options]
 #
 # Options:
-#   -t, --type <type>       Profiling type: oltp | olap | sysbench | clickbench  (required)
+#   -t, --type <type>       Profiling type (required): oltp | olap | sysbench | clickbench
+#   -e, --engine <engine>   Storage engine (default: percona-myrocks)
+#                           Options: percona-myrocks | percona-innodb
 #   -q, --queries <list>    olap: TPC-H query numbers (default: "1 6 12 19")
 #                           clickbench: query numbers (default: "3 8 14 17")
 #   --threads <n>           oltp/sysbench: thread count (default: 32)
-#   --workload <name>       sysbench only: workload name (default: oltp_read_only)
+#   --workload <name>       sysbench: workload name (default: oltp_read_only)
 #                           Options: oltp_read_only, oltp_read_write, oltp_write_only
 #   --skip-prepare          Skip data preparation (data must already exist on SSD)
 #   --full                  Force full data preparation (ignore backup)
@@ -22,14 +22,14 @@
 #
 # Examples:
 #   $0 -t olap
+#   $0 -t olap -e percona-innodb
 #   $0 -t olap -q "1 6"
-#   $0 -t oltp --threads 16
+#   $0 -t oltp
+#   $0 -t oltp -e percona-innodb --threads 16
 #   $0 -t sysbench
 #   $0 -t sysbench --workload oltp_read_write --threads 16
-#   $0 -t clickbench
-#   $0 -t clickbench -q "3 8 14 17 34"
-#   $0 -t olap --skip-prepare
-#   $0 -t oltp --full
+#   $0 -t clickbench -e percona-innodb
+#   $0 -t olap --skip-prepare -e percona-innodb
 
 set -e
 set -o pipefail
@@ -38,7 +38,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../common/config/env.sh"
 
 CGROUP_PATH="/sys/fs/cgroup/${CGROUP_NAME}"
-ENGINE="percona-myrocks"
 
 usage() {
     cat << EOF
@@ -46,6 +45,8 @@ Usage: $0 [options]
 
 Options:
     -t, --type <type>       Profiling type (required): oltp | olap | sysbench | clickbench
+    -e, --engine <engine>   Storage engine (default: percona-myrocks)
+                            Options: percona-myrocks | percona-innodb
     -q, --queries <list>    olap: TPC-H query numbers, space-separated (default: "${PROFILING_OLAP_QUERIES}")
                             clickbench: query numbers, space-separated (default: "3 8 14 17")
     --threads <n>           oltp/sysbench: thread count (default: 32)
@@ -57,13 +58,14 @@ Options:
 
 Examples:
     $0 -t olap
+    $0 -t olap -e percona-innodb
     $0 -t olap -q "1 6"
-    $0 -t oltp --threads 16
+    $0 -t oltp
+    $0 -t oltp -e percona-innodb --threads 16
     $0 -t sysbench
     $0 -t sysbench --workload oltp_read_write --threads 16
-    $0 -t clickbench
-    $0 -t clickbench -q "3 8 14 17 34"
-    $0 -t olap --skip-prepare
+    $0 -t clickbench -e percona-innodb
+    $0 -t olap --skip-prepare -e percona-innodb
 EOF
     exit 1
 }
@@ -71,6 +73,7 @@ EOF
 # ── Argument parsing ──────────────────────────────────────────────────────────
 
 TYPE=""
+ENGINE="percona-myrocks"
 QUERIES=""
 THREADS="32"
 WORKLOAD="oltp_read_only"
@@ -81,6 +84,10 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         -t|--type)
             TYPE="$2"
+            shift 2
+            ;;
+        -e|--engine)
+            ENGINE="$2"
             shift 2
             ;;
         -q|--queries)
@@ -139,6 +146,14 @@ case $TYPE in
         ;;
 esac
 
+case $ENGINE in
+    percona-myrocks|percona-innodb) ;;
+    *)
+        log_error "Invalid engine: $ENGINE (must be percona-myrocks or percona-innodb)"
+        usage
+        ;;
+esac
+
 # ── Cgroup check (same as run-cgroup.sh) ─────────────────────────────────────
 
 if [ ! -d "$CGROUP_PATH" ]; then
@@ -151,10 +166,10 @@ MEMORY_LIMIT=$(cat "${CGROUP_PATH}/memory.max" 2>/dev/null \
     | awk '{printf "%.2f GB", $1/1024/1024/1024}')
 
 log_info "=========================================="
-log_info "MyRocks Profiling with Cgroup Memory Limit"
+log_info "Profiling with Cgroup Memory Limit"
 log_info "=========================================="
-log_info "Engine        : ${ENGINE}"
 log_info "Type          : ${TYPE}"
+log_info "Engine        : ${ENGINE}"
 case $TYPE in
     olap|clickbench)
         log_info "Queries       : ${QUERIES}"
@@ -178,10 +193,10 @@ echo ""
 
 START_TIME=$(date +%s)
 
-# ── Phase 1: Data preparation WITHOUT cgroup (same as run-cgroup.sh) ─────────
+# ── Phase 1: Data preparation WITHOUT cgroup ──────────────────────────────────
 
 if [ "$SKIP_PREPARE" = false ]; then
-    log_info "Phase 1: Data Preparation for ${PREPARE_BENCHMARK} (no cgroup limit)"
+    log_info "Phase 1: Data Preparation for ${PREPARE_BENCHMARK}/${ENGINE} (no cgroup limit)"
     log_info "  - SSD will be reset for a clean state"
     echo ""
 
@@ -198,31 +213,31 @@ else
     echo ""
 fi
 
-# ── Phase 2: Run profiling WITH cgroup (same pattern as run-cgroup.sh) ────────
+# ── Phase 2: Run profiling WITH cgroup ────────────────────────────────────────
 
-log_info "Phase 2: Run ${TYPE} profiling (cgroup limit: ${MEMORY_LIMIT})"
+log_info "Phase 2: Run ${TYPE}/${ENGINE} profiling (cgroup limit: ${MEMORY_LIMIT})"
 echo ""
 
 case $TYPE in
     olap)
         sudo -E cgexec -g memory:"${CGROUP_NAME}" \
             bash "${SCRIPT_DIR}/../profiling/profile-olap.sh" \
-            "$QUERIES"
+            "$QUERIES" "" "$ENGINE"
         ;;
     oltp)
         sudo -E cgexec -g memory:"${CGROUP_NAME}" \
             bash "${SCRIPT_DIR}/../profiling/profile-oltp.sh" \
-            "$THREADS"
+            "$THREADS" "" "$ENGINE"
         ;;
     sysbench)
         sudo -E cgexec -g memory:"${CGROUP_NAME}" \
             bash "${SCRIPT_DIR}/../profiling/profile-sysbench.sh" \
-            "$WORKLOAD" "$THREADS"
+            "$WORKLOAD" "$THREADS" "" "$ENGINE"
         ;;
     clickbench)
         sudo -E cgexec -g memory:"${CGROUP_NAME}" \
             bash "${SCRIPT_DIR}/../profiling/profile-clickbench.sh" \
-            "$QUERIES"
+            "$QUERIES" "" "$ENGINE"
         ;;
 esac
 
@@ -234,6 +249,7 @@ TOTAL_DURATION=$(( END_TIME - START_TIME ))
 log_info "=========================================="
 log_info "Profiling complete!"
 log_info "Type     : ${TYPE}"
+log_info "Engine   : ${ENGINE}"
 log_info "Duration : ${TOTAL_DURATION}s ($((TOTAL_DURATION / 60))m)"
-log_info "Results  : ${RESULTS_DIR}/profiling/${TYPE}/"
+log_info "Results  : ${RESULTS_DIR}/profiling/${TYPE}/${ENGINE}/"
 log_info "=========================================="

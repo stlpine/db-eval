@@ -32,10 +32,27 @@ source "${SCRIPT_DIR}/../scripts/monitor.sh"
 # ── Configuration ─────────────────────────────────────────────────────────────
 
 QUERIES="${1:-3 8 14 17}"
-RESULT_DIR="${2:-${RESULTS_DIR}/profiling/clickbench/$(date +%Y%m%d_%H%M%S)}"
-ENGINE="percona-myrocks"
-SOCKET="${MYSQL_SOCKET_PERCONA_MYROCKS}"
+ENGINE="${3:-percona-myrocks}"
 QUERIES_SQL="${SCRIPT_DIR}/../clickbench/queries/queries.sql"
+
+case "$ENGINE" in
+    percona-myrocks)
+        SOCKET="${MYSQL_SOCKET_PERCONA_MYROCKS}"
+        PID_FILE="${MYSQL_PID_PERCONA_MYROCKS}"
+        EXPECTED_ENGINE="ROCKSDB"
+        ;;
+    percona-innodb)
+        SOCKET="${MYSQL_SOCKET_PERCONA_INNODB}"
+        PID_FILE="${MYSQL_PID_PERCONA_INNODB}"
+        EXPECTED_ENGINE="InnoDB"
+        ;;
+    *)
+        echo "Unknown engine: $ENGINE (use percona-myrocks or percona-innodb)" >&2
+        exit 1
+        ;;
+esac
+
+RESULT_DIR="${2:-${RESULTS_DIR}/profiling/clickbench/${ENGINE}/$(date +%Y%m%d_%H%M%S)}"
 
 # ── Helper functions (mirrors profile-olap.sh) ────────────────────────────────
 
@@ -69,14 +86,14 @@ verify_storage_engine() {
     wrong_tables=$(mysql --socket="$SOCKET" -N -e "
         SELECT TABLE_NAME, ENGINE
         FROM information_schema.TABLES
-        WHERE TABLE_SCHEMA = '${BENCHMARK_DB}' AND ENGINE != 'ROCKSDB';" 2>/dev/null)
+        WHERE TABLE_SCHEMA = '${BENCHMARK_DB}' AND ENGINE != '${EXPECTED_ENGINE}';" 2>/dev/null)
     if [ -n "$wrong_tables" ]; then
-        log_error "Storage engine mismatch! Expected ROCKSDB."
+        log_error "Storage engine mismatch! Expected ${EXPECTED_ENGINE}."
         echo "$wrong_tables"
         stop_mysql
         exit 1
     fi
-    log_info "Storage engine verified: all tables use ROCKSDB"
+    log_info "Storage engine verified: all tables use ${EXPECTED_ENGINE}"
 }
 
 capture_data_profile() {
@@ -112,7 +129,7 @@ get_query_sql() {
 # ── Preflight ─────────────────────────────────────────────────────────────────
 
 log_info "=========================================="
-log_info "MyRocks ClickBench Profiling"
+log_info "ClickBench Profiling (${ENGINE})"
 log_info "=========================================="
 log_info "Engine  : $ENGINE"
 log_info "Queries : $QUERIES"
@@ -206,16 +223,18 @@ log_info "Logging configuration to: $CONFIG_LOG"
 } > "$CONFIG_LOG" 2>&1
 log_info "Configuration logged"
 
-MYSQLD_PID=$(cat "${MYSQL_PID_PERCONA_MYROCKS}" 2>/dev/null || true)
+MYSQLD_PID=$(cat "${PID_FILE}" 2>/dev/null || true)
 if [ -z "$MYSQLD_PID" ] || ! kill -0 "$MYSQLD_PID" 2>/dev/null; then
     log_error "Cannot find mysqld PID"
     exit 1
 fi
 
-# Enable perf context globally
-mysql --socket="$SOCKET" \
-    -e "SET GLOBAL rocksdb_perf_context_level = ${PROFILING_PERF_CONTEXT_LEVEL};" 2>/dev/null
-log_info "rocksdb_perf_context_level set to ${PROFILING_PERF_CONTEXT_LEVEL}"
+# Enable perf context globally (MyRocks only)
+if [ "$ENGINE" = "percona-myrocks" ]; then
+    mysql --socket="$SOCKET" \
+        -e "SET GLOBAL rocksdb_perf_context_level = ${PROFILING_PERF_CONTEXT_LEVEL};" 2>/dev/null
+    log_info "rocksdb_perf_context_level set to ${PROFILING_PERF_CONTEXT_LEVEL}"
+fi
 
 # ── Start sysstat monitors ─────────────────────────────────────────────────────
 
@@ -241,9 +260,15 @@ trap cleanup EXIT
 
 # ── Initialise results CSV ────────────────────────────────────────────────────
 
-PERF_CSV="${RESULT_DIR}/clickbench_perf_context.csv"
-echo "query,elapsed_s,rows_scanned,internal_key_skipped_count,internal_delete_skipped_count,get_snapshot_time_ns,block_read_count,block_read_byte,block_read_time_ns,get_from_memtable_count,get_from_memtable_time_ns,get_from_output_files_time_ns" \
-    > "$PERF_CSV"
+if [ "$ENGINE" = "percona-myrocks" ]; then
+    PERF_CSV="${RESULT_DIR}/clickbench_perf_context.csv"
+    echo "query,elapsed_s,rows_scanned,internal_key_skipped_count,internal_delete_skipped_count,get_snapshot_time_ns,block_read_count,block_read_byte,block_read_time_ns,get_from_memtable_count,get_from_memtable_time_ns,get_from_output_files_time_ns" \
+        > "$PERF_CSV"
+else
+    PERF_CSV="${RESULT_DIR}/clickbench_innodb_perf_context.csv"
+    echo "query,elapsed_s,rows_scanned,handler_read_key,innodb_rows_read,innodb_buffer_pool_reads,innodb_buffer_pool_read_requests,innodb_buffer_pool_read_ahead,innodb_pages_read,innodb_data_reads,innodb_data_read_bytes" \
+        > "$PERF_CSV"
+fi
 
 # ── Per-query profiling ───────────────────────────────────────────────────────
 
@@ -259,12 +284,14 @@ profile_query() {
 
     log_info "── Q${q} ──────────────────────────────────────────"
 
-    # Flush MyRocks memtable → all reads go to SST files
-    mysql --socket="$SOCKET" \
-        -e "SET GLOBAL rocksdb_force_flush_memtable_now = 1;" 2>/dev/null
-    log_info "  Memtable flushed to SST"
+    # Flush MyRocks memtable → all reads go to SST files (MyRocks only)
+    if [ "$ENGINE" = "percona-myrocks" ]; then
+        mysql --socket="$SOCKET" \
+            -e "SET GLOBAL rocksdb_force_flush_memtable_now = 1;" 2>/dev/null
+        log_info "  Memtable flushed to SST"
+    fi
 
-    # Drop OS page cache so MyRocks reads from SSD (cold I/O)
+    # Drop OS page cache so reads come from SSD (cold I/O)
     drop_page_cache
 
     # Start perf record attached to mysqld
@@ -275,12 +302,30 @@ profile_query() {
     PERF_PID=$!
     sleep 0.5   # let perf attach before query starts
 
+    # InnoDB only: snapshot global status BEFORE query (Innodb_* vars are global-only in MySQL 8.4;
+    # FLUSH STATUS + SHOW SESSION STATUS returns cumulative totals, not per-query values)
+    local innodb_before=""
+    if [ "$ENGINE" = "percona-innodb" ]; then
+        innodb_before=$(mysql --socket="$SOCKET" --batch --skip-column-names 2>/dev/null -e "
+            SHOW GLOBAL STATUS WHERE Variable_name IN (
+                'Innodb_rows_read',
+                'Innodb_buffer_pool_reads',
+                'Innodb_buffer_pool_read_requests',
+                'Innodb_buffer_pool_read_ahead',
+                'Innodb_pages_read',
+                'Innodb_data_reads',
+                'Innodb_data_read'
+            );") || true
+        [ -z "$innodb_before" ] && log_error "  WARNING: innodb_before snapshot empty — delta metrics will be zero"
+    fi
+
     local start_time end_time elapsed
     start_time=$(date +%s.%N)
 
     local raw_output
-    raw_output=$(mysql --socket="$SOCKET" "$BENCHMARK_DB" \
-        --batch --skip-column-names --force 2>/dev/null <<SQL
+    if [ "$ENGINE" = "percona-myrocks" ]; then
+        raw_output=$(mysql --socket="$SOCKET" "$BENCHMARK_DB" \
+            --batch --skip-column-names --force 2>/dev/null <<SQL
 FLUSH STATUS;
 ${query_sql}
 SELECT variable_name, variable_value
@@ -290,43 +335,97 @@ SHOW SESSION STATUS LIKE 'Handler_read_first';
 SHOW SESSION STATUS LIKE 'Handler_read_next';
 SHOW SESSION STATUS LIKE 'Handler_read_rnd_next';
 SQL
-    )
+        )
+    else
+        raw_output=$(mysql --socket="$SOCKET" "$BENCHMARK_DB" \
+            --batch --skip-column-names --force 2>/dev/null <<SQL
+FLUSH STATUS;
+${query_sql}
+SHOW SESSION STATUS LIKE 'Handler_read_first';
+SHOW SESSION STATUS LIKE 'Handler_read_next';
+SHOW SESSION STATUS LIKE 'Handler_read_rnd_next';
+SHOW SESSION STATUS LIKE 'Handler_read_key';
+SQL
+        )
+    fi
 
-    # Save raw output for debugging
     echo "$raw_output" > "${RESULT_DIR}/perf_ctx_raw_cb_q${q}.txt"
 
     end_time=$(date +%s.%N)
     elapsed=$(echo "$end_time - $start_time" | bc)
 
-    # SIGINT causes perf to flush and write the data file cleanly
+    # InnoDB only: snapshot global status AFTER query and save raw snapshots for audit
+    local innodb_after=""
+    if [ "$ENGINE" = "percona-innodb" ]; then
+        innodb_after=$(mysql --socket="$SOCKET" --batch --skip-column-names 2>/dev/null -e "
+            SHOW GLOBAL STATUS WHERE Variable_name IN (
+                'Innodb_rows_read',
+                'Innodb_buffer_pool_reads',
+                'Innodb_buffer_pool_read_requests',
+                'Innodb_buffer_pool_read_ahead',
+                'Innodb_pages_read',
+                'Innodb_data_reads',
+                'Innodb_data_read'
+            );") || true
+        [ -z "$innodb_after" ] && log_error "  WARNING: innodb_after snapshot empty — delta metrics will be zero"
+        { echo "# before"; echo "$innodb_before"; echo "# after"; echo "$innodb_after"; } \
+            > "${RESULT_DIR}/innodb_global_raw_cb_q${q}.txt"
+    fi
+
     sudo kill -INT "$PERF_PID" 2>/dev/null || true
     wait "$PERF_PID" 2>/dev/null || true
     PERF_PID=""
 
-    # Parse perf context (tab-separated name<TAB>value lines)
     _get() { echo "$raw_output" | awk -v k="$1" '$1==k{print $2}'; }
-    local iksc;  iksc=$(_get  "internal_key_skipped_count")
-    local idsc;  idsc=$(_get  "internal_delete_skipped_count")
-    local gst;   gst=$(_get   "get_snapshot_time")
-    local brc;   brc=$(_get   "block_read_count")
-    local brb;   brb=$(_get   "block_read_byte")
-    local brt;   brt=$(_get   "block_read_time")
-    local gfmc;  gfmc=$(_get  "get_from_memtable_count")
-    local gfmt;  gfmt=$(_get  "get_from_memtable_time")
-    local gfoft; gfoft=$(_get "get_from_output_files_time")
 
-    # Handler rows: proxy for rows scanned
     local h_first h_nxt h_rnd rows_scanned
-    h_first=$(echo "$raw_output" | awk '$1=="Handler_read_first"{print $2}')
-    h_nxt=$(echo "$raw_output"   | awk '$1=="Handler_read_next"{print $2}')
-    h_rnd=$(echo "$raw_output"   | awk '$1=="Handler_read_rnd_next"{print $2}')
+    h_first=$(_get "Handler_read_first")
+    h_nxt=$(  _get "Handler_read_next")
+    h_rnd=$(  _get "Handler_read_rnd_next")
     rows_scanned=$(( ${h_first:-0} + ${h_nxt:-0} + ${h_rnd:-0} ))
 
-    printf "  elapsed=%.1fs | rows_scanned=%s | key_skipped=%s | block_reads=%s\n" \
-        "$elapsed" "$rows_scanned" "${iksc:-0}" "${brc:-0}"
-
-    echo "${q},${elapsed},${rows_scanned},${iksc:-0},${idsc:-0},${gst:-0},${brc:-0},${brb:-0},${brt:-0},${gfmc:-0},${gfmt:-0},${gfoft:-0}" \
-        >> "$PERF_CSV"
+    if [ "$ENGINE" = "percona-myrocks" ]; then
+        local iksc idsc gst brc brb brt gfmc gfmt gfoft
+        iksc=$( _get "internal_key_skipped_count")
+        idsc=$( _get "internal_delete_skipped_count")
+        gst=$(  _get "get_snapshot_time")
+        brc=$(  _get "block_read_count")
+        brb=$(  _get "block_read_byte")
+        brt=$(  _get "block_read_time")
+        gfmc=$( _get "get_from_memtable_count")
+        gfmt=$( _get "get_from_memtable_time")
+        gfoft=$(_get "get_from_output_files_time")
+        printf "  elapsed=%.1fs | rows_scanned=%s | key_skipped=%s | block_reads=%s\n" \
+            "$elapsed" "$rows_scanned" "${iksc:-0}" "${brc:-0}"
+        echo "${q},${elapsed},${rows_scanned},${iksc:-0},${idsc:-0},${gst:-0},${brc:-0},${brb:-0},${brt:-0},${gfmc:-0},${gfmt:-0},${gfoft:-0}" \
+            >> "$PERF_CSV"
+    else
+        # Compute per-query InnoDB deltas from global before/after snapshots
+        _delta() {
+            local varname=$1
+            local bv av
+            bv=$(echo "$innodb_before" | awk -v k="$varname" 'toupper($1)==toupper(k){print $2+0}')
+            av=$(echo "$innodb_after"  | awk -v k="$varname" 'toupper($1)==toupper(k){print $2+0}')
+            echo $(( ${av:-0} - ${bv:-0} ))
+        }
+        local h_key inno_rows inno_bp_reads inno_bp_req inno_bp_ahead inno_pages inno_data_reads inno_data_bytes bp_hit_pct
+        h_key=$(          _get   "Handler_read_key")
+        inno_rows=$(       _delta "Innodb_rows_read")
+        inno_bp_reads=$(   _delta "Innodb_buffer_pool_reads")
+        inno_bp_req=$(     _delta "Innodb_buffer_pool_read_requests")
+        inno_bp_ahead=$(   _delta "Innodb_buffer_pool_read_ahead")
+        inno_pages=$(      _delta "Innodb_pages_read")
+        inno_data_reads=$( _delta "Innodb_data_reads")
+        inno_data_bytes=$( _delta "Innodb_data_read")
+        bp_hit_pct="N/A"
+        if [ "${inno_bp_req:-0}" -gt 0 ] 2>/dev/null; then
+            bp_hit_pct=$(awk "BEGIN {printf \"%.2f\", 100*(1 - ${inno_bp_reads:-0}/${inno_bp_req})}")
+        fi
+        printf "  elapsed=%.1fs | rows_scanned=%s | bp_hit=%s%% | disk_reads=%s\n" \
+            "$elapsed" "$rows_scanned" "${bp_hit_pct}" "${inno_bp_reads:-0}"
+        echo "${q},${elapsed},${rows_scanned},${h_key:-0},${inno_rows:-0},${inno_bp_reads:-0},${inno_bp_req:-0},${inno_bp_ahead:-0},${inno_pages:-0},${inno_data_reads:-0},${inno_data_bytes:-0}" \
+            >> "$PERF_CSV"
+    fi
 
     # Generate flamegraph
     if [ -s "$perf_data" ]; then
@@ -334,7 +433,7 @@ SQL
         sudo perf script -i "$perf_data" 2>/dev/null \
             | "${FLAMEGRAPH_DIR}/stackcollapse-perf.pl" \
             | "${FLAMEGRAPH_DIR}/flamegraph.pl" \
-                --title "MyRocks ClickBench Q${q} ($(printf '%.1f' "$elapsed")s)" \
+                --title "${ENGINE} ClickBench Q${q} ($(printf '%.1f' "$elapsed")s)" \
                 --width 1800 \
             > "$svg" || log_error "  Flamegraph generation failed for Q${q}"
         log_info "  Flamegraph: $svg"

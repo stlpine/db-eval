@@ -31,9 +31,26 @@ source "${SCRIPT_DIR}/../scripts/monitor.sh"
 
 WORKLOAD="${1:-oltp_read_only}"
 THREADS="${2:-32}"
-RESULT_DIR="${3:-${RESULTS_DIR}/profiling/sysbench/$(date +%Y%m%d_%H%M%S)}"
-ENGINE="percona-myrocks"
-SOCKET="${MYSQL_SOCKET_PERCONA_MYROCKS}"
+ENGINE="${4:-percona-myrocks}"
+
+case "$ENGINE" in
+    percona-myrocks)
+        SOCKET="${MYSQL_SOCKET_PERCONA_MYROCKS}"
+        PID_FILE="${MYSQL_PID_PERCONA_MYROCKS}"
+        EXPECTED_ENGINE="ROCKSDB"
+        ;;
+    percona-innodb)
+        SOCKET="${MYSQL_SOCKET_PERCONA_INNODB}"
+        PID_FILE="${MYSQL_PID_PERCONA_INNODB}"
+        EXPECTED_ENGINE="InnoDB"
+        ;;
+    *)
+        echo "Unknown engine: $ENGINE (use percona-myrocks or percona-innodb)" >&2
+        exit 1
+        ;;
+esac
+
+RESULT_DIR="${3:-${RESULTS_DIR}/profiling/sysbench/${ENGINE}/$(date +%Y%m%d_%H%M%S)}"
 
 WARMUP_DURATION="${PROFILING_WARMUP_DURATION}"
 RECORD_DURATION="${PROFILING_RECORD_DURATION}"
@@ -71,14 +88,14 @@ verify_storage_engine() {
     wrong_tables=$(mysql --socket="$SOCKET" -N -e "
         SELECT TABLE_NAME, ENGINE
         FROM information_schema.TABLES
-        WHERE TABLE_SCHEMA = '${BENCHMARK_DB}' AND ENGINE != 'ROCKSDB';" 2>/dev/null)
+        WHERE TABLE_SCHEMA = '${BENCHMARK_DB}' AND ENGINE != '${EXPECTED_ENGINE}';" 2>/dev/null)
     if [ -n "$wrong_tables" ]; then
-        log_error "Storage engine mismatch! Expected ROCKSDB for all sysbench tables."
+        log_error "Storage engine mismatch! Expected ${EXPECTED_ENGINE} for all sysbench tables."
         echo "$wrong_tables"
         stop_mysql
         exit 1
     fi
-    log_info "Storage engine verified: all tables use ROCKSDB"
+    log_info "Storage engine verified: all tables use ${EXPECTED_ENGINE}"
 }
 
 capture_data_profile() {
@@ -100,38 +117,52 @@ capture_data_profile() {
 }
 
 snapshot_perf_context_global() {
-    local result
-    result=$(mysql --socket="$SOCKET" --batch --skip-column-names 2>/dev/null -e "
-        SELECT variable_name, variable_value
-        FROM information_schema.rocksdb_perf_context_global
-        WHERE variable_name IN (
-            'internal_key_skipped_count',
-            'internal_delete_skipped_count',
-            'get_snapshot_time',
-            'block_read_count',
-            'block_read_byte',
-            'block_read_time',
-            'get_from_memtable_count',
-            'get_from_memtable_time',
-            'get_from_output_files_time'
-        )
-        ORDER BY variable_name;") || true
+    if [ "$ENGINE" = "percona-myrocks" ]; then
+        local result
+        result=$(mysql --socket="$SOCKET" --batch --skip-column-names 2>/dev/null -e "
+            SELECT variable_name, variable_value
+            FROM information_schema.rocksdb_perf_context_global
+            WHERE variable_name IN (
+                'internal_key_skipped_count',
+                'internal_delete_skipped_count',
+                'get_snapshot_time',
+                'block_read_count',
+                'block_read_byte',
+                'block_read_time',
+                'get_from_memtable_count',
+                'get_from_memtable_time',
+                'get_from_output_files_time'
+            )
+            ORDER BY variable_name;") || true
 
-    if [ -n "$result" ]; then
-        echo "$result"
+        if [ -n "$result" ]; then
+            echo "$result"
+        else
+            log_info "  rocksdb_perf_context_global unavailable, trying SHOW ENGINE ROCKSDB STATUS" >&2
+            mysql --socket="$SOCKET" --batch --skip-column-names 2>/dev/null -e "
+                SHOW ENGINE ROCKSDB STATUS;" \
+            | grep -E "internal_key_skipped_count|internal_delete_skipped_count|get_snapshot_time|block_read_count|block_read_byte|block_read_time|get_from_memtable_count|get_from_memtable_time|get_from_output_files_time" \
+            | awk '{print $1, $NF}' || true
+        fi
     else
-        log_info "  rocksdb_perf_context_global unavailable, trying SHOW ENGINE ROCKSDB STATUS" >&2
         mysql --socket="$SOCKET" --batch --skip-column-names 2>/dev/null -e "
-            SHOW ENGINE ROCKSDB STATUS;" \
-        | grep -E "internal_key_skipped_count|internal_delete_skipped_count|get_snapshot_time|block_read_count|block_read_byte|block_read_time|get_from_memtable_count|get_from_memtable_time|get_from_output_files_time" \
-        | awk '{print $1, $NF}' || true
+            SHOW GLOBAL STATUS WHERE Variable_name IN (
+                'Innodb_rows_read',
+                'Innodb_rows_inserted',
+                'Innodb_rows_updated',
+                'Innodb_rows_deleted',
+                'Innodb_buffer_pool_reads',
+                'Innodb_buffer_pool_read_requests',
+                'Innodb_data_reads',
+                'Innodb_data_read'
+            );" || true
     fi
 }
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
 
 log_info "=========================================="
-log_info "MyRocks Sysbench Profiling"
+log_info "Sysbench Profiling (${ENGINE})"
 log_info "=========================================="
 log_info "Engine   : $ENGINE"
 log_info "Workload : $WORKLOAD"
@@ -235,17 +266,19 @@ log_info "Logging configuration to: $CONFIG_LOG"
 } > "$CONFIG_LOG" 2>&1
 log_info "Configuration logged"
 
-MYSQLD_PID=$(cat "${MYSQL_PID_PERCONA_MYROCKS}" 2>/dev/null || true)
+MYSQLD_PID=$(cat "${PID_FILE}" 2>/dev/null || true)
 if [ -z "$MYSQLD_PID" ] || ! kill -0 "$MYSQLD_PID" 2>/dev/null; then
     log_error "Cannot find mysqld PID"
     exit 1
 fi
 
-# ── Enable perf context globally ──────────────────────────────────────────────
+# ── Enable perf context globally (MyRocks only) ───────────────────────────────
 
-mysql --socket="$SOCKET" \
-    -e "SET GLOBAL rocksdb_perf_context_level = ${PROFILING_PERF_CONTEXT_LEVEL};" 2>/dev/null
-log_info "rocksdb_perf_context_level set to ${PROFILING_PERF_CONTEXT_LEVEL}"
+if [ "$ENGINE" = "percona-myrocks" ]; then
+    mysql --socket="$SOCKET" \
+        -e "SET GLOBAL rocksdb_perf_context_level = ${PROFILING_PERF_CONTEXT_LEVEL};" 2>/dev/null
+    log_info "rocksdb_perf_context_level set to ${PROFILING_PERF_CONTEXT_LEVEL}"
+fi
 
 # ── Start sysstat monitors ────────────────────────────────────────────────────
 
@@ -329,7 +362,7 @@ log_info "Recording window done."
 
 snapshot_perf_context_global > "$PERF_CTX_AFTER" || true
 
-PERF_CSV="${RESULT_DIR}/rocksdb_perf_context_delta.csv"
+PERF_CSV="${RESULT_DIR}/$([ "$ENGINE" = "percona-myrocks" ] && echo "rocksdb_perf_context_delta" || echo "innodb_status_delta").csv"
 echo "metric,before,after,delta" > "$PERF_CSV"
 
 awk '
@@ -354,7 +387,7 @@ if [ -s "$PERF_DATA" ]; then
     sudo perf script -i "$PERF_DATA" 2>/dev/null \
         | "${FLAMEGRAPH_DIR}/stackcollapse-perf.pl" \
         | "${FLAMEGRAPH_DIR}/flamegraph.pl" \
-            --title "MyRocks Sysbench ${WORKLOAD} ${THREADS}t" \
+            --title "${ENGINE} Sysbench ${WORKLOAD} ${THREADS}t" \
             --width 1800 \
         > "$SVG" || log_error "Flamegraph generation failed"
     log_info "Flamegraph: $SVG"
