@@ -91,6 +91,18 @@ export SYSBENCH_TPCC_REPORT_INTERVAL="10" # Report interval in seconds
 export SYSBENCH_TPCC_USE_FK="0"           # Disable foreign keys for fair MyRocks comparison
 # Note: transaction-isolation and collation are set in my-*.cnf server configs
 
+# HTAP Profiling Configuration (AIDE VLDB'23 §6.4 + SIGMOD'20 LLT paper)
+export HTAP_TABLES="12"                  # Tables (AIDE: 12)
+export HTAP_TABLE_SIZE="100000"          # Rows per table (AIDE: 100k)
+export HTAP_OLTP_THREADS="24"            # Concurrent update workers (AIDE: 24)
+export HTAP_LLT_COUNT="4"               # Long-lived transactions holding GC back (LLT paper: 4)
+export HTAP_WARMUP_DURATION="60"         # Warmup before analytical phase (seconds)
+export HTAP_DURATION="600"               # Total analytical window duration (seconds)
+export HTAP_CTX_INTERVAL="30"            # Perf context snapshot interval (seconds)
+export HTAP_OLAP_RUNS="5"               # Analytical query runs per session
+export HTAP_JOIN_CUTOFF="90000"          # Default k <= cutoff (~90% selectivity)
+export HTAP_SELECTIVITY_CUTOFFS="1000 10000 30000 60000 90000"  # Selectivity sweep
+
 # ClickBench Configuration (OLAP)
 export CLICKBENCH_DATA_URL="https://datasets.clickhouse.com/hits_compatible/hits.tsv.gz"
 export CLICKBENCH_DATA_DIR="${SSD_MOUNT}/clickbench-data"

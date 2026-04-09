@@ -44,7 +44,7 @@ usage() {
 Usage: $0 [options]
 
 Options:
-    -t, --type <type>       Profiling type (required): oltp | olap | sysbench | clickbench
+    -t, --type <type>       Profiling type (required): oltp | olap | sysbench | clickbench | htap
     -e, --engine <engine>   Storage engine (default: percona-myrocks)
                             Options: percona-myrocks | percona-innodb
     -q, --queries <list>    olap: TPC-H query numbers, space-separated (default: "${PROFILING_OLAP_QUERIES}")
@@ -52,6 +52,7 @@ Options:
     --threads <n>           oltp/sysbench: thread count (default: 32)
     --workload <name>       sysbench: workload name (default: oltp_read_only)
                             Options: oltp_read_only, oltp_read_write, oltp_write_only
+    --cutoff <n>            htap: join k <= cutoff selectivity value (default: ${HTAP_JOIN_CUTOFF})
     --skip-prepare          Skip data preparation (data must already exist)
     --full                  Force full data preparation (ignore backup)
     -h, --help
@@ -66,6 +67,9 @@ Examples:
     $0 -t sysbench --workload oltp_read_write --threads 16
     $0 -t clickbench -e percona-innodb
     $0 -t olap --skip-prepare -e percona-innodb
+    $0 -t htap -e percona-myrocks
+    $0 -t htap -e percona-myrocks --cutoff 10000
+    $0 -t htap --skip-prepare -e percona-myrocks
 EOF
     exit 1
 }
@@ -77,6 +81,7 @@ ENGINE="percona-myrocks"
 QUERIES=""
 THREADS="32"
 WORKLOAD="oltp_read_only"
+CUTOFF="${HTAP_JOIN_CUTOFF}"
 SKIP_PREPARE=false
 FORCE_FULL=false
 
@@ -102,6 +107,10 @@ while [[ $# -gt 0 ]]; do
             WORKLOAD="$2"
             shift 2
             ;;
+        --cutoff)
+            CUTOFF="$2"
+            shift 2
+            ;;
         --skip-prepare)
             SKIP_PREPARE=true
             shift
@@ -121,7 +130,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [ -z "$TYPE" ]; then
-    log_error "Profiling type is required (-t oltp|olap|sysbench|clickbench)"
+    log_error "Profiling type is required (-t oltp|olap|sysbench|clickbench|htap)"
     usage
 fi
 
@@ -140,8 +149,11 @@ case $TYPE in
         PREPARE_BENCHMARK="clickbench"
         [ -z "$QUERIES" ] && QUERIES="3 8 14 17"
         ;;
+    htap)
+        PREPARE_BENCHMARK="sysbench-htap"
+        ;;
     *)
-        log_error "Invalid type: $TYPE (must be oltp, olap, sysbench, or clickbench)"
+        log_error "Invalid type: $TYPE (must be oltp, olap, sysbench, clickbench, or htap)"
         usage
         ;;
 esac
@@ -181,11 +193,19 @@ case $TYPE in
     oltp)
         log_info "Threads       : ${THREADS}"
         ;;
+    htap)
+        log_info "Cutoff        : ${CUTOFF}"
+        log_info "OLAP runs     : ${HTAP_OLAP_RUNS}"
+        log_info "OLTP threads  : ${HTAP_OLTP_THREADS}"
+        log_info "LLT count     : ${HTAP_LLT_COUNT}"
+        ;;
 esac
 log_info "Cgroup        : ${CGROUP_NAME}"
 log_info "Memory limit  : ${MEMORY_LIMIT}"
-log_info "Warmup        : ${PROFILING_WARMUP_DURATION}s"
-log_info "Record window : ${PROFILING_RECORD_DURATION}s"
+if [ "$TYPE" != "htap" ]; then
+    log_info "Warmup        : ${PROFILING_WARMUP_DURATION}s"
+    log_info "Record window : ${PROFILING_RECORD_DURATION}s"
+fi
 log_info "Skip prepare  : ${SKIP_PREPARE}"
 log_info "Force full    : ${FORCE_FULL}"
 log_info "=========================================="
@@ -238,6 +258,11 @@ case $TYPE in
         sudo -E cgexec -g memory:"${CGROUP_NAME}" \
             bash "${SCRIPT_DIR}/../profiling/profile-clickbench.sh" \
             "$QUERIES" "" "$ENGINE"
+        ;;
+    htap)
+        sudo -E cgexec -g memory:"${CGROUP_NAME}" \
+            bash "${SCRIPT_DIR}/../profiling/profile-htap.sh" \
+            "$CUTOFF" "" "$ENGINE"
         ;;
 esac
 

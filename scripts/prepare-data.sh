@@ -22,6 +22,9 @@ Options:
                               OLAP benchmarks:
                               - clickbench
                               - tpch-olap
+                              HTAP benchmarks:
+                              - sysbench-htap (12 tables x 100k rows, k index dropped)
+                                WARNING: shares sbtest* table names with sysbench
                               NOTE: All benchmarks share the same database. Only one
                               benchmark can be loaded at a time to ensure fair comparison
                               and maximize available SSD space.
@@ -197,6 +200,7 @@ PREPARE_TPCC=false
 PREPARE_SYSBENCH_TPCC=false
 PREPARE_CLICKBENCH=false
 PREPARE_TPCH_OLAP=false
+PREPARE_SYSBENCH_HTAP=false
 
 IFS=',' read -ra BENCH_ARRAY <<< "$BENCHMARK"
 for bench in "${BENCH_ARRAY[@]}"; do
@@ -216,6 +220,9 @@ for bench in "${BENCH_ARRAY[@]}"; do
         tpch-olap)
             PREPARE_TPCH_OLAP=true
             ;;
+        sysbench-htap)
+            PREPARE_SYSBENCH_HTAP=true
+            ;;
         *)
             log_error "Invalid benchmark: $bench"
             usage
@@ -230,6 +237,7 @@ BENCH_COUNT=0
 [ "$PREPARE_SYSBENCH_TPCC" = true ] && BENCH_COUNT=$((BENCH_COUNT + 1))
 [ "$PREPARE_CLICKBENCH" = true ] && BENCH_COUNT=$((BENCH_COUNT + 1))
 [ "$PREPARE_TPCH_OLAP" = true ] && BENCH_COUNT=$((BENCH_COUNT + 1))
+[ "$PREPARE_SYSBENCH_HTAP" = true ] && BENCH_COUNT=$((BENCH_COUNT + 1))
 
 if [ "$BENCH_COUNT" -gt 1 ]; then
     log_error "Cannot prepare multiple benchmarks in one command."
@@ -250,6 +258,8 @@ elif [ "$PREPARE_CLICKBENCH" = true ]; then
     RESTORE_BENCHMARK="clickbench"
 elif [ "$PREPARE_TPCH_OLAP" = true ]; then
     RESTORE_BENCHMARK="tpch-olap"
+elif [ "$PREPARE_SYSBENCH_HTAP" = true ]; then
+    RESTORE_BENCHMARK="sysbench-htap"
 fi
 
 # Determine if we should use backup
@@ -284,6 +294,7 @@ if [ "$USE_BACKUP" = false ]; then
     [ "$PREPARE_SYSBENCH_TPCC" = true ] && log_info "  - sysbench-tpcc (OLTP)"
     [ "$PREPARE_CLICKBENCH" = true ] && log_info "  - clickbench (OLAP)"
     [ "$PREPARE_TPCH_OLAP" = true ] && log_info "  - tpch-olap (OLAP)"
+    [ "$PREPARE_SYSBENCH_HTAP" = true ] && log_info "  - sysbench-htap (HTAP: 12 tables x 100k rows, k index dropped)"
 fi
 log_info "=========================================="
 echo ""
@@ -461,6 +472,15 @@ else
         log_info "This generates ~${TPCH_SCALE_FACTOR}GB of data"
         log_info "=========================================="
         "${SCRIPT_DIR}/../tpch-olap/prepare.sh" "$ENGINE"
+    fi
+
+    if [ "$PREPARE_SYSBENCH_HTAP" = true ]; then
+        log_info "=========================================="
+        log_info "Preparing Sysbench-HTAP data (HTAP profiling)..."
+        log_info "  ${HTAP_TABLES} tables x ${HTAP_TABLE_SIZE} rows, k index dropped"
+        log_info "  WARNING: uses sbtest* table names — conflicts with standard sysbench data"
+        log_info "=========================================="
+        "${SCRIPT_DIR}/../sysbench-htap/prepare.sh" "$ENGINE"
     fi
 
     # Stop MySQL

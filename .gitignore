@@ -1,6 +1,7 @@
 # Results directory
 results/
 comparison/
+docs/
 
 # Log files
 *.log
