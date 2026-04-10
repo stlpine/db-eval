@@ -147,8 +147,10 @@ snapshot_perf_context_global() {
 
         if [ -n "$result" ]; then
             echo "$result"
+        elif [ "${PERF_CTX_USE_IS_TABLE}" = "true" ]; then
+            # Table probed as available at startup but returned empty — transient, skip silently
+            true
         else
-            log_info "  rocksdb_perf_context_global unavailable, trying SHOW ENGINE ROCKSDB STATUS" >&2
             mysql --socket="$SOCKET" --batch --skip-column-names 2>/dev/null -e "
                 SHOW ENGINE ROCKSDB STATUS;" \
             | grep -E "internal_key_skipped_count|internal_delete_skipped_count|get_snapshot_time|block_read_count|block_read_byte|block_read_time|get_from_memtable_count|get_from_memtable_time|get_from_output_files_time" \
@@ -245,11 +247,23 @@ capture_data_profile "$RESULT_DIR"
 
 # ── Phase 2: Configure + Monitors ────────────────────────────────────────────
 
+PERF_CTX_USE_IS_TABLE=false
 if [ "$ENGINE" = "percona-myrocks" ]; then
     mysql --socket="$SOCKET" \
         -e "SET GLOBAL rocksdb_perf_context_level = ${PROFILING_PERF_CONTEXT_LEVEL};" 2>/dev/null
     log_info "rocksdb_perf_context_level set to ${PROFILING_PERF_CONTEXT_LEVEL}"
+    _probe=$(mysql --socket="$SOCKET" --batch --skip-column-names 2>/dev/null -e "
+        SELECT COUNT(*) FROM information_schema.rocksdb_perf_context_global
+        WHERE variable_name = 'internal_key_skipped_count';" || echo "0")
+    if [ "${_probe:-0}" -gt 0 ] 2>/dev/null; then
+        PERF_CTX_USE_IS_TABLE=true
+        log_info "rocksdb_perf_context_global: available (using information_schema)"
+    else
+        PERF_CTX_USE_IS_TABLE=false
+        log_info "rocksdb_perf_context_global: unavailable — will use SHOW ENGINE ROCKSDB STATUS fallback"
+    fi
 fi
+export PERF_CTX_USE_IS_TABLE
 
 start_monitors "$RESULT_DIR" "profiling_htap"
 
