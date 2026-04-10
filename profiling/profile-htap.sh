@@ -500,6 +500,7 @@ for RUN in $(seq 1 "$HTAP_OLAP_RUNS"); do
         raw_output=$(mysql --socket="$SOCKET" "$BENCHMARK_DB" \
             --batch --skip-column-names --force 2>/dev/null <<SQL
 SET SESSION transaction_isolation='REPEATABLE-READ';
+SET SESSION max_execution_time=$((HTAP_QUERY_TIMEOUT * 1000));
 SET @htap_cutoff = ${CUTOFF};
 FLUSH STATUS;
 ${JOIN4_CONTENT}
@@ -515,6 +516,7 @@ SQL
         raw_output=$(mysql --socket="$SOCKET" "$BENCHMARK_DB" \
             --batch --skip-column-names --force 2>/dev/null <<SQL
 SET SESSION transaction_isolation='REPEATABLE-READ';
+SET SESSION max_execution_time=$((HTAP_QUERY_TIMEOUT * 1000));
 SET @htap_cutoff = ${CUTOFF};
 FLUSH STATUS;
 ${JOIN4_CONTENT}
