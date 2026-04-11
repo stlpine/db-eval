@@ -253,8 +253,9 @@ if [ "$ENGINE" = "percona-myrocks" ]; then
         -e "SET GLOBAL rocksdb_perf_context_level = ${PROFILING_PERF_CONTEXT_LEVEL};" 2>/dev/null
     log_info "rocksdb_perf_context_level set to ${PROFILING_PERF_CONTEXT_LEVEL}"
     _probe=$(mysql --socket="$SOCKET" --batch --skip-column-names 2>/dev/null -e "
-        SELECT COUNT(*) FROM information_schema.rocksdb_perf_context_global
-        WHERE variable_name = 'internal_key_skipped_count';" || echo "0")
+        SELECT COUNT(*) FROM information_schema.TABLES
+        WHERE TABLE_SCHEMA = 'information_schema'
+          AND TABLE_NAME = 'rocksdb_perf_context_global';" || echo "0")
     if [ "${_probe:-0}" -gt 0 ] 2>/dev/null; then
         PERF_CTX_USE_IS_TABLE=true
         log_info "rocksdb_perf_context_global: available (using information_schema)"
@@ -310,7 +311,7 @@ CONFIG_LOG="${RESULT_DIR}/profiling_config.log"
     echo "PERF_CALL_GRAPH: dwarf"
     echo "NOTE: k index dropped on all tables (non-indexed join per AIDE paper)"
     echo "NOTE: LLTs hold GC back so versions accumulate across OLAP runs (version pressure visible in flamegraphs)"
-    echo "NOTE: LLT sleep = HTAP_WARMUP_DURATION + HTAP_DURATION = $((HTAP_WARMUP_DURATION + HTAP_DURATION))s (covers full experimental window)"
+    echo "NOTE: LLT sleep = HTAP_WARMUP_DURATION + HTAP_OLAP_RUNS * HTAP_QUERY_TIMEOUT = $((HTAP_WARMUP_DURATION + HTAP_OLAP_RUNS * HTAP_QUERY_TIMEOUT))s (covers full experimental window)"
     echo "NOTE: OLTP rand-type=pareto (skewed, hot rows accumulate long version chains per LLT paper §5.2.1)"
     echo "NOTE: Analytical sessions use REPEATABLE-READ (per AIDE §6.3 + LLT paper §5.1)"
     echo "NOTE: Memtable flushed before OLAP phase (ensures versions in SSTables where FindNextUserEntry runs)"
@@ -350,7 +351,7 @@ trap cleanup EXIT
 
 # ── Phase 3: Start OLTP background ───────────────────────────────────────────
 
-OLTP_TOTAL=$(( HTAP_WARMUP_DURATION + HTAP_DURATION + 30 ))
+OLTP_TOTAL=$(( HTAP_WARMUP_DURATION + HTAP_OLAP_RUNS * HTAP_QUERY_TIMEOUT + 60 ))
 log_info "Starting OLTP background (${HTAP_OLTP_THREADS} threads, ${OLTP_TOTAL}s)..."
 
 sysbench oltp_read_write \
@@ -383,7 +384,7 @@ SET SESSION wait_timeout=86400;
 SET SESSION net_read_timeout=86400;
 SET SESSION net_write_timeout=86400;
 START TRANSACTION;
-SELECT SLEEP($((HTAP_WARMUP_DURATION + HTAP_DURATION)));
+SELECT SLEEP($((HTAP_WARMUP_DURATION + HTAP_OLAP_RUNS * HTAP_QUERY_TIMEOUT)));
 ROLLBACK;
 SQL
     LLT_PIDS+=($!)
@@ -493,6 +494,15 @@ for RUN in $(seq 1 "$HTAP_OLAP_RUNS"); do
     PERF_PID=$!
     sleep 0.5   # let perf attach before query starts
 
+    # MyRocks: snapshot global perf context immediately before query to enable
+    # per-run delta computation. Using global snapshots (same as version growth
+    # loop) because information_schema.rocksdb_perf_context (per-session) is
+    # unreliable — it returns 0 rows until after the first query runs.
+    ctx_before=""
+    if [ "$ENGINE" = "percona-myrocks" ]; then
+        ctx_before=$(snapshot_perf_context_global)
+    fi
+
     start_time=$(date +%s.%N)
 
     # Run the analytical query: SET cutoff, FLUSH STATUS, execute join4, collect stats
@@ -500,13 +510,11 @@ for RUN in $(seq 1 "$HTAP_OLAP_RUNS"); do
         raw_output=$(mysql --socket="$SOCKET" "$BENCHMARK_DB" \
             --batch --skip-column-names --force 2>/dev/null <<SQL
 SET SESSION transaction_isolation='REPEATABLE-READ';
+SET SESSION rocksdb_perf_context_level=${PROFILING_PERF_CONTEXT_LEVEL};
 SET SESSION max_execution_time=$((HTAP_QUERY_TIMEOUT * 1000));
 SET @htap_cutoff = ${CUTOFF};
 FLUSH STATUS;
 ${JOIN4_CONTENT}
-SELECT variable_name, variable_value
-    FROM information_schema.rocksdb_perf_context
-    ORDER BY variable_name;
 SHOW SESSION STATUS LIKE 'Handler_read_first';
 SHOW SESSION STATUS LIKE 'Handler_read_next';
 SHOW SESSION STATUS LIKE 'Handler_read_rnd_next';
@@ -528,9 +536,20 @@ SQL
         )
     fi
 
-    echo "$raw_output" > "${RESULT_DIR}/perf_ctx_raw_run${RUN}.txt"
     end_time=$(date +%s.%N)
     elapsed=$(echo "$end_time - $start_time" | bc)
+
+    # MyRocks: snapshot global perf context immediately after query
+    ctx_after=""
+    if [ "$ENGINE" = "percona-myrocks" ]; then
+        ctx_after=$(snapshot_perf_context_global)
+    fi
+
+    echo "$raw_output" > "${RESULT_DIR}/perf_ctx_raw_run${RUN}.txt"
+    if [ "$ENGINE" = "percona-myrocks" ]; then
+        { echo "# ctx_before"; echo "$ctx_before"; echo "# ctx_after"; echo "$ctx_after"; } \
+            >> "${RESULT_DIR}/perf_ctx_raw_run${RUN}.txt"
+    fi
 
     # InnoDB: snapshot global status after query
     innodb_after=""
@@ -561,6 +580,16 @@ SQL
 
     # Extract metrics
     _get() { echo "$raw_output" | awk -v k="$1" '$1==k{print $2}'; }
+    # _ctx_delta: compute per-run RocksDB global perf context delta using before/after
+    # global snapshots. Uses awk for arithmetic to handle large counter values that
+    # bash $((...)) can't handle when MySQL formats them in scientific notation.
+    _ctx_delta() {
+        local varname=$1
+        local bv av
+        bv=$(echo "$ctx_before" | awk -v k="$varname" '$1==k{print $2+0}')
+        av=$(echo "$ctx_after"  | awk -v k="$varname" '$1==k{print $2+0}')
+        awk "BEGIN{printf \"%d\", ${av:-0} - ${bv:-0}}"
+    }
 
     h_first=$(_get "Handler_read_first")
     h_nxt=$(  _get "Handler_read_next")
@@ -568,14 +597,14 @@ SQL
     rows_scanned=$(( ${h_first:-0} + ${h_nxt:-0} + ${h_rnd:-0} ))
 
     if [ "$ENGINE" = "percona-myrocks" ]; then
-        iksc_delta=$( _get "internal_key_skipped_count")
-        idsc_delta=$( _get "internal_delete_skipped_count")
-        gst_delta=$(  _get "get_snapshot_time")
-        brc_delta=$(  _get "block_read_count")
-        brb_delta=$(  _get "block_read_byte")
-        brt_delta=$(  _get "block_read_time")
-        gfmc_delta=$( _get "get_from_memtable_count")
-        gfoft_delta=$(_get "get_from_output_files_time")
+        iksc_delta=$(  _ctx_delta "internal_key_skipped_count")
+        idsc_delta=$(  _ctx_delta "internal_delete_skipped_count")
+        gst_delta=$(   _ctx_delta "get_snapshot_time")
+        brc_delta=$(   _ctx_delta "block_read_count")
+        brb_delta=$(   _ctx_delta "block_read_byte")
+        brt_delta=$(   _ctx_delta "block_read_time")
+        gfmc_delta=$(  _ctx_delta "get_from_memtable_count")
+        gfoft_delta=$( _ctx_delta "get_from_output_files_time")
         printf "  run=%d elapsed=%.1fs | rows_scanned=%s | key_skipped=%s | block_reads=%s | llt_alive=%d\n" \
             "$RUN" "$elapsed" "$rows_scanned" "${iksc_delta:-0}" "${brc_delta:-0}" "$llt_alive"
         echo "${RUN},${elapsed},${CUTOFF},${rows_scanned},${iksc_delta:-0},${idsc_delta:-0},${gst_delta:-0},${brc_delta:-0},${brb_delta:-0},${brt_delta:-0},${gfmc_delta:-0},${gfoft_delta:-0}" \
@@ -586,7 +615,7 @@ SQL
             local bv av
             bv=$(echo "$innodb_before" | awk -v k="$varname" 'toupper($1)==toupper(k){print $2+0}')
             av=$(echo "$innodb_after"  | awk -v k="$varname" 'toupper($1)==toupper(k){print $2+0}')
-            echo $(( ${av:-0} - ${bv:-0} ))
+            awk "BEGIN{printf \"%d\", ${av:-0} - ${bv:-0}}"
         }
         h_key=$(         _get   "Handler_read_key")
         inno_rows=$(      _delta "Innodb_rows_read")
