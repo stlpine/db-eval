@@ -246,14 +246,35 @@ verify_storage_engine
 capture_data_profile "$RESULT_DIR"
 
 # Stabilise optimizer statistics before any workload starts.
-# MyRocks row-count estimates from SST sampling can be wildly wrong (e.g. 0 rows
-# or 4x the actual count), causing the optimizer to pick a nested-loop plan
-# (400k rows scanned) instead of hash join (300k rows) on run 1.  Running
-# ANALYZE TABLE once here gives all 5 OLAP runs the same consistent plan.
-log_info "Running ANALYZE TABLE to stabilise optimizer statistics..."
+# ANALYZE TABLE alone is not enough for MyRocks: SST row count estimates can be
+# wildly wrong, AND the optimizer needs a histogram on k to estimate the
+# selectivity of WHERE k <= @htap_cutoff.  Without a histogram, the optimizer
+# uses a default uniform assumption and may choose a suboptimal nested-loop plan
+# on run 1 (400k rows scanned) instead of hash join (300k rows).
+log_info "Running ANALYZE TABLE + histogram on k to stabilise optimizer..."
 mysql --socket="$SOCKET" "$BENCHMARK_DB" 2>/dev/null \
-    -e "ANALYZE TABLE sbtest1, sbtest2, sbtest3, sbtest4;" || \
-    log_error "  WARNING: ANALYZE TABLE failed — run-1 query plan may differ"
+    -e "ANALYZE TABLE sbtest1, sbtest2, sbtest3, sbtest4
+        UPDATE HISTOGRAM ON k WITH 254 BUCKETS;" || \
+    log_error "  WARNING: ANALYZE TABLE + histogram failed — run-1 plan may differ"
+
+# Discover the actual schema of information_schema.ROCKSDB_PERF_CONTEXT.
+# The table is per-table columnar (one row per table, columns for each metric),
+# NOT key-value pairs — SELECT WHERE variable_name='...' will always return 0 rows.
+# This diagnostic file tells us the real column names so we can fix the SELECT.
+if [ "$ENGINE" = "percona-myrocks" ]; then
+    log_info "Discovering ROCKSDB_PERF_CONTEXT schema..."
+    {
+        echo "=== DESCRIBE ==="
+        mysql --socket="$SOCKET" --batch 2>/dev/null \
+            -e "DESCRIBE information_schema.ROCKSDB_PERF_CONTEXT;" || echo "(table missing or error)"
+        echo "=== SAMPLE ROW (after ANALYZE, before OLTP) ==="
+        mysql --socket="$SOCKET" "$BENCHMARK_DB" --batch 2>/dev/null \
+            -e "SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
+                WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
+                  AND TABLE_NAME = 'sbtest1';" || echo "(no rows or error)"
+    } > "${RESULT_DIR}/rocksdb_perf_ctx_schema.txt" 2>&1
+    log_info "Schema discovery saved to: ${RESULT_DIR}/rocksdb_perf_ctx_schema.txt"
+fi
 
 # ── Phase 2: Configure + Monitors ────────────────────────────────────────────
 
@@ -458,21 +479,28 @@ log_info "Starting version growth snapshot loop (interval: ${HTAP_CTX_INTERVAL}s
             # per-session perf context, so the counters reflect only this probe.
             # internal_key_skipped_count will grow over time as OLTP accumulates
             # more versions that the probe scan must traverse and skip.
+            # Probe scan: run a small range scan in REPEATABLE-READ, then read the
+            # per-session perf context for THIS connection (fresh each interval).
+            # ROCKSDB_PERF_CONTEXT is columnar — SELECT * and parse headers.
             ctx=$(mysql --socket="$SOCKET" "$BENCHMARK_DB" \
-                --batch --skip-column-names 2>/dev/null \
+                --batch 2>/dev/null \
                 -e "SET SESSION rocksdb_perf_context_level = ${PROFILING_PERF_CONTEXT_LEVEL};
                     SET SESSION transaction_isolation = 'REPEATABLE-READ';
                     SET SESSION max_execution_time = 5000;
                     SELECT COUNT(*) FROM sbtest1 WHERE k <= 1000;
-                    SELECT variable_name, variable_value
-                    FROM information_schema.rocksdb_perf_context
-                    WHERE variable_name IN (
-                        'internal_key_skipped_count',
-                        'internal_delete_skipped_count',
-                        'block_read_count');") || true
-            iksc=$(echo "$ctx" | awk '$1=="internal_key_skipped_count"{print $2+0}')
-            idsc=$(echo "$ctx" | awk '$1=="internal_delete_skipped_count"{print $2+0}')
-            brc=$( echo "$ctx" | awk '$1=="block_read_count"{print $2+0}')
+                    SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
+                    WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
+                      AND TABLE_NAME = 'sbtest1';") || true
+            # Parse columnar output: header row 1, data row 2 (sbtest1 only)
+            iksc=$(echo "$ctx" | awk '
+                NR==1{for(i=1;i<=NF;i++) if(toupper($i)=="INTERNAL_KEY_SKIPPED_COUNT"){idx=i;break}}
+                NR==2 && idx{print $idx+0}')
+            idsc=$(echo "$ctx" | awk '
+                NR==1{for(i=1;i<=NF;i++) if(toupper($i)=="INTERNAL_DELETE_SKIPPED_COUNT"){idx=i;break}}
+                NR==2 && idx{print $idx+0}')
+            brc=$(echo "$ctx"  | awk '
+                NR==1{for(i=1;i<=NF;i++) if(toupper($i)=="BLOCK_READ_COUNT"){idx=i;break}}
+                NR==2 && idx{print $idx+0}')
         else
             ctx=$(snapshot_perf_context_global)
             # InnoDB: map global counters to CSV columns
@@ -542,37 +570,24 @@ for RUN in $(seq 1 "$HTAP_OLAP_RUNS"); do
     # after the join query.  The CTX_SPLIT sentinel separates before/after in
     # the raw output so the shell can compute per-run deltas.
     if [ "$ENGINE" = "percona-myrocks" ]; then
+        # ROCKSDB_PERF_CONTEXT is a per-table columnar table (one row per table,
+        # separate columns per metric) — NOT a key-value table.  Query with SELECT *
+        # filtered to the four join tables; the shell parser handles any column layout.
         raw_output=$(mysql --socket="$SOCKET" "$BENCHMARK_DB" \
-            --batch --skip-column-names --force 2>/dev/null <<SQL
+            --batch --force 2>/dev/null <<SQL
 SET SESSION transaction_isolation='REPEATABLE-READ';
 SET SESSION rocksdb_perf_context_level=${PROFILING_PERF_CONTEXT_LEVEL};
 SET SESSION max_execution_time=$((HTAP_QUERY_TIMEOUT * 1000));
 SET @htap_cutoff = ${CUTOFF};
-SELECT variable_name, variable_value
-FROM information_schema.rocksdb_perf_context
-WHERE variable_name IN (
-    'internal_key_skipped_count',
-    'internal_delete_skipped_count',
-    'get_snapshot_time',
-    'block_read_count',
-    'block_read_byte',
-    'block_read_time',
-    'get_from_memtable_count',
-    'get_from_output_files_time');
+SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
+WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
+  AND TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4');
 SELECT 'CTX_SPLIT' AS ctx_marker;
 FLUSH STATUS;
 ${JOIN4_CONTENT}
-SELECT variable_name, variable_value
-FROM information_schema.rocksdb_perf_context
-WHERE variable_name IN (
-    'internal_key_skipped_count',
-    'internal_delete_skipped_count',
-    'get_snapshot_time',
-    'block_read_count',
-    'block_read_byte',
-    'block_read_time',
-    'get_from_memtable_count',
-    'get_from_output_files_time');
+SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
+WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
+  AND TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4');
 SHOW SESSION STATUS LIKE 'Handler_read_first';
 SHOW SESSION STATUS LIKE 'Handler_read_next';
 SHOW SESSION STATUS LIKE 'Handler_read_rnd_next';
@@ -597,16 +612,17 @@ SQL
     end_time=$(date +%s.%N)
     elapsed=$(echo "$end_time - $start_time" | bc)
 
-    # For MyRocks: split raw_output into before/after perf context sections.
-    # Lines before CTX_SPLIT = ctx_before (session startup to just before join).
-    # Lines between CTX_SPLIT and first Handler_ line = ctx_after (includes join).
+    # For MyRocks: split raw_output at CTX_SPLIT to get before/after perf context.
+    # The ROCKSDB_PERF_CONTEXT table is columnar — column names depend on the build.
+    # We store the raw sections verbatim; _ctx_delta reads named columns below.
     ctx_before=""
     ctx_after=""
     if [ "$ENGINE" = "percona-myrocks" ]; then
-        ctx_before=$(echo "$raw_output" | awk '/^CTX_SPLIT$/{exit} {print}')
-        ctx_after=$(echo  "$raw_output" | awk 'f && /^Handler_/{exit} f{print} /^CTX_SPLIT$/{f=1}')
+        ctx_before=$(echo "$raw_output" | awk '/^CTX_SPLIT/{exit} {print}')
+        ctx_after=$(echo  "$raw_output" | awk 'f && /^Handler_/{exit} f{print} /^CTX_SPLIT/{f=1}')
     fi
 
+    # Save raw output; append parsed before/after for human inspection
     echo "$raw_output" > "${RESULT_DIR}/perf_ctx_raw_run${RUN}.txt"
     if [ "$ENGINE" = "percona-myrocks" ]; then
         { echo "# ctx_before"; echo "$ctx_before"; echo "# ctx_after"; echo "$ctx_after"; } \
@@ -641,15 +657,23 @@ SQL
     fi
 
     # Extract metrics
-    _get() { echo "$raw_output" | awk -v k="$1" '$1==k{print $2}'; }
-    # _ctx_delta: compute per-run delta from the per-session perf context snapshots
-    # taken inside the OLAP heredoc (ctx_before/ctx_after extracted via CTX_SPLIT).
-    # Uses awk for arithmetic to handle large counter values safely.
+    _get() { echo "$raw_output" | awk -v k="$1" 'NF==2 && $1==k{print $2}'; }
+    # _ctx_delta: compute per-run delta from ROCKSDB_PERF_CONTEXT columnar output.
+    # The table emits one row per table with column headers on row 1 (--batch without
+    # --skip-column-names).  We sum the named column across all table rows and take
+    # after - before.  Column name matching is case-insensitive so it works regardless
+    # of whether Percona uppercases the RocksDB PerfContext field names.
     _ctx_delta() {
-        local varname=$1
+        local colname=$1
+        _col_sum() {
+            echo "$1" | awk -v col="$colname" '
+                NR==1 { for(i=1;i<=NF;i++) if(toupper($i)==toupper(col)){idx=i; break} }
+                NR>1  && idx+0>0 { sum += $idx+0 }
+                END   { print sum+0 }'
+        }
         local bv av
-        bv=$(echo "$ctx_before" | awk -v k="$varname" '$1==k{print $2+0}')
-        av=$(echo "$ctx_after"  | awk -v k="$varname" '$1==k{print $2+0}')
+        bv=$(_col_sum "$ctx_before")
+        av=$(_col_sum "$ctx_after")
         awk "BEGIN{printf \"%d\", ${av:-0} - ${bv:-0}}"
     }
 
@@ -659,6 +683,9 @@ SQL
     rows_scanned=$(( ${h_first:-0} + ${h_nxt:-0} + ${h_rnd:-0} ))
 
     if [ "$ENGINE" = "percona-myrocks" ]; then
+        # Column names match RocksDB PerfContext field names (case-insensitive).
+        # The schema discovery file (rocksdb_perf_ctx_schema.txt) from this run
+        # will confirm the exact names used by this Percona build.
         iksc_delta=$(  _ctx_delta "internal_key_skipped_count")
         idsc_delta=$(  _ctx_delta "internal_delete_skipped_count")
         gst_delta=$(   _ctx_delta "get_snapshot_time")
