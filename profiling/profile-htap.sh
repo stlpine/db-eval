@@ -252,15 +252,21 @@ capture_data_profile "$RESULT_DIR"
 # uses a default uniform assumption and may choose a suboptimal nested-loop plan
 # on run 1 (400k rows scanned) instead of hash join (300k rows).
 log_info "Running ANALYZE TABLE + histogram on k to stabilise optimizer..."
+# MySQL 8.4: UPDATE HISTOGRAM only accepts a single table — loop over each.
+# ANALYZE TABLE (without histogram) accepts multiple tables and must run first
+# to refresh RocksDB row-count estimates used by the join-order planner.
 mysql --socket="$SOCKET" "$BENCHMARK_DB" 2>/dev/null \
-    -e "ANALYZE TABLE sbtest1, sbtest2, sbtest3, sbtest4
-        UPDATE HISTOGRAM ON k WITH 254 BUCKETS;" || \
-    log_error "  WARNING: ANALYZE TABLE + histogram failed — run-1 plan may differ"
+    -e "ANALYZE TABLE sbtest1, sbtest2, sbtest3, sbtest4;" || \
+    log_error "  WARNING: ANALYZE TABLE failed"
+for _tbl in sbtest1 sbtest2 sbtest3 sbtest4; do
+    mysql --socket="$SOCKET" "$BENCHMARK_DB" 2>/dev/null \
+        -e "ANALYZE TABLE ${_tbl} UPDATE HISTOGRAM ON k WITH 254 BUCKETS;" || \
+        log_error "  WARNING: histogram on ${_tbl} failed (non-fatal)"
+done
 
-# Discover the actual schema of information_schema.ROCKSDB_PERF_CONTEXT.
-# The table is per-table columnar (one row per table, columns for each metric),
-# NOT key-value pairs — SELECT WHERE variable_name='...' will always return 0 rows.
-# This diagnostic file tells us the real column names so we can fix the SELECT.
+# Capture the schema of information_schema.ROCKSDB_PERF_CONTEXT for reference.
+# Confirmed schema: key-value — (TABLE_SCHEMA, TABLE_NAME, PARTITION_NAME, STAT_TYPE, VALUE).
+# One row per (table, metric). Parsers use STAT_TYPE for lookup, VALUE for aggregation.
 if [ "$ENGINE" = "percona-myrocks" ]; then
     log_info "Discovering ROCKSDB_PERF_CONTEXT schema..."
     {
@@ -491,16 +497,25 @@ log_info "Starting version growth snapshot loop (interval: ${HTAP_CTX_INTERVAL}s
                     SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
                     WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
                       AND TABLE_NAME = 'sbtest1';") || true
-            # Parse columnar output: header row 1, data row 2 (sbtest1 only)
-            iksc=$(echo "$ctx" | awk '
-                NR==1{for(i=1;i<=NF;i++) if(toupper($i)=="INTERNAL_KEY_SKIPPED_COUNT"){idx=i;break}}
-                NR==2 && idx{print $idx+0}')
-            idsc=$(echo "$ctx" | awk '
-                NR==1{for(i=1;i<=NF;i++) if(toupper($i)=="INTERNAL_DELETE_SKIPPED_COUNT"){idx=i;break}}
-                NR==2 && idx{print $idx+0}')
-            brc=$(echo "$ctx"  | awk '
-                NR==1{for(i=1;i<=NF;i++) if(toupper($i)=="BLOCK_READ_COUNT"){idx=i;break}}
-                NR==2 && idx{print $idx+0}')
+            # ROCKSDB_PERF_CONTEXT schema: (TABLE_SCHEMA, TABLE_NAME, PARTITION_NAME, STAT_TYPE, VALUE)
+            # One row per (table, metric). Find the STAT_TYPE and VALUE column indices from
+            # the header row, then pick rows where STAT_TYPE matches the desired metric name.
+            _perf_ctx_val() {
+                local metric=$1
+                echo "$ctx" | awk -v m="$metric" '
+                    NR==1 {
+                        for(i=1;i<=NF;i++) {
+                            if(toupper($i)=="STAT_TYPE") st=i
+                            if(toupper($i)=="VALUE")     vl=i
+                        }
+                        next
+                    }
+                    st && vl && toupper($st)==toupper(m) { print $vl+0; exit }
+                '
+            }
+            iksc=$(_perf_ctx_val "INTERNAL_KEY_SKIPPED_COUNT")
+            idsc=$(_perf_ctx_val "INTERNAL_DELETE_SKIPPED_COUNT")
+            brc=$( _perf_ctx_val "BLOCK_READ_COUNT")
         else
             ctx=$(snapshot_perf_context_global)
             # InnoDB: map global counters to CSV columns
@@ -570,14 +585,18 @@ for RUN in $(seq 1 "$HTAP_OLAP_RUNS"); do
     # after the join query.  The CTX_SPLIT sentinel separates before/after in
     # the raw output so the shell can compute per-run deltas.
     if [ "$ENGINE" = "percona-myrocks" ]; then
-        # ROCKSDB_PERF_CONTEXT is a per-table columnar table (one row per table,
-        # separate columns per metric) — NOT a key-value table.  Query with SELECT *
-        # filtered to the four join tables; the shell parser handles any column layout.
+        # ROCKSDB_PERF_CONTEXT schema: (TABLE_SCHEMA, TABLE_NAME, PARTITION_NAME, STAT_TYPE, VALUE).
+        # Query with SELECT * filtered to the four join tables; _ctx_delta sums VALUE
+        # where STAT_TYPE matches the requested metric name.
         raw_output=$(mysql --socket="$SOCKET" "$BENCHMARK_DB" \
             --batch --force 2>/dev/null <<SQL
 SET SESSION transaction_isolation='REPEATABLE-READ';
 SET SESSION rocksdb_perf_context_level=${PROFILING_PERF_CONTEXT_LEVEL};
 SET SESSION max_execution_time=$((HTAP_QUERY_TIMEOUT * 1000));
+-- Force hash join so the plan is consistent across all 5 runs regardless of
+-- MyRocks' inaccurate TABLE_ROWS estimates at cold start (run 1 would otherwise
+-- use block nested loop, scanning ~400k rows instead of the hash-join ~300k).
+SET SESSION optimizer_switch='block_nested_loop=off';
 SET @htap_cutoff = ${CUTOFF};
 SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
 WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
@@ -658,23 +677,29 @@ SQL
 
     # Extract metrics
     _get() { echo "$raw_output" | awk -v k="$1" 'NF==2 && $1==k{print $2}'; }
-    # _ctx_delta: compute per-run delta from ROCKSDB_PERF_CONTEXT columnar output.
-    # The table emits one row per table with column headers on row 1 (--batch without
-    # --skip-column-names).  We sum the named column across all table rows and take
-    # after - before.  Column name matching is case-insensitive so it works regardless
-    # of whether Percona uppercases the RocksDB PerfContext field names.
+    # _ctx_delta: compute per-run delta from ROCKSDB_PERF_CONTEXT output.
+    # Schema: (TABLE_SCHEMA, TABLE_NAME, PARTITION_NAME, STAT_TYPE, VALUE) — key-value,
+    # NOT columnar. We find the STAT_TYPE and VALUE column indices from the header row,
+    # sum VALUE across all matching rows (four join tables), and return after - before.
     _ctx_delta() {
-        local colname=$1
-        _col_sum() {
-            echo "$1" | awk -v col="$colname" '
-                NR==1 { for(i=1;i<=NF;i++) if(toupper($i)==toupper(col)){idx=i; break} }
-                NR>1  && idx+0>0 { sum += $idx+0 }
-                END   { print sum+0 }'
+        local metric=$1
+        _ctx_sum() {
+            echo "$1" | awk -v m="$metric" '
+                NR==1 {
+                    for(i=1;i<=NF;i++) {
+                        if(toupper($i)=="STAT_TYPE") st=i
+                        if(toupper($i)=="VALUE")     vl=i
+                    }
+                    next
+                }
+                st && vl && toupper($st)==toupper(m) { sum += $vl+0 }
+                END { printf "%.0f\n", sum+0 }
+            '
         }
         local bv av
-        bv=$(_col_sum "$ctx_before")
-        av=$(_col_sum "$ctx_after")
-        awk "BEGIN{printf \"%d\", ${av:-0} - ${bv:-0}}"
+        bv=$(_ctx_sum "$ctx_before")
+        av=$(_ctx_sum "$ctx_after")
+        awk "BEGIN{printf \"%.0f\n\", ${av:-0} - ${bv:-0}}"
     }
 
     h_first=$(_get "Handler_read_first")
@@ -702,9 +727,11 @@ SQL
         _delta() {
             local varname=$1
             local bv av
-            bv=$(echo "$innodb_before" | awk -v k="$varname" 'toupper($1)==toupper(k){print $2+0}')
-            av=$(echo "$innodb_after"  | awk -v k="$varname" 'toupper($1)==toupper(k){print $2+0}')
-            awk "BEGIN{printf \"%d\", ${av:-0} - ${bv:-0}}"
+            # Use %.0f to avoid scientific notation and to handle counters > INT32_MAX
+            # (e.g. Innodb_rows_read exceeds 2^31 after a long OLTP run).
+            bv=$(echo "$innodb_before" | awk -v k="$varname" 'toupper($1)==toupper(k){printf "%.0f\n", $2+0}')
+            av=$(echo "$innodb_after"  | awk -v k="$varname" 'toupper($1)==toupper(k){printf "%.0f\n", $2+0}')
+            awk "BEGIN{printf \"%.0f\n\", ${av:-0} - ${bv:-0}}"
         }
         h_key=$(         _get   "Handler_read_key")
         inno_rows=$(      _delta "Innodb_rows_read")
