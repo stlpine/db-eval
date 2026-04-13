@@ -682,23 +682,10 @@ SQL
     # NOT columnar. We find the STAT_TYPE and VALUE column indices from the header row,
     # sum VALUE across all matching rows (four join tables), and return after - before.
     _ctx_delta() {
-        local metric=$1
-        _ctx_sum() {
-            echo "$1" | awk -v m="$metric" '
-                NR==1 {
-                    for(i=1;i<=NF;i++) {
-                        if(toupper($i)=="STAT_TYPE") st=i
-                        if(toupper($i)=="VALUE")     vl=i
-                    }
-                    next
-                }
-                st && vl && toupper($st)==toupper(m) { sum += $vl+0 }
-                END { printf "%.0f\n", sum+0 }
-            '
-        }
-        local bv av
-        bv=$(_ctx_sum "$ctx_before")
-        av=$(_ctx_sum "$ctx_after")
+        local metric=$1 bv av
+        local _awk='NR==1{for(i=1;i<=NF;i++){if(toupper($i)=="STAT_TYPE")st=i;if(toupper($i)=="VALUE")vl=i}next} st&&vl&&toupper($st)==toupper(m){sum+=$vl+0} END{printf "%.0f\n",sum+0}'
+        bv=$(echo "$ctx_before" | awk -v m="$metric" "$_awk")
+        av=$(echo "$ctx_after"  | awk -v m="$metric" "$_awk")
         awk "BEGIN{printf \"%.0f\n\", ${av:-0} - ${bv:-0}}"
     }
 
