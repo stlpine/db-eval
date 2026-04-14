@@ -354,7 +354,7 @@ CONFIG_LOG="${RESULT_DIR}/profiling_config.log"
     echo "NOTE: Memtable flushed before OLAP phase + 30s compaction settling wait (ensures versions in SSTables, stable background I/O)"
     echo "NOTE: ANALYZE TABLE run before OLAP loop to stabilise optimizer row estimates (MyRocks SST sampling unreliable)"
     echo "NOTE: RocksDB perf context captured PER-SESSION inside OLAP heredoc (CTX_SPLIT sentinel) — NOT from external monitor"
-    echo "NOTE: Version growth loop uses probe scan (sbtest1 k<=1000) to measure per-probe internal_key_skipped_count growth"
+    echo "NOTE: Version growth loop uses probe scan (sbtest1 k<=1000) to measure per-probe internal_key_skipped_count growth; awk detects STAT_TYPE header by content (not NR==1) to handle multi-result-set --batch output"
     echo ""
     echo "============================================================"
     echo "MYSQL SERVER VARIABLES"
@@ -488,22 +488,28 @@ log_info "Starting version growth snapshot loop (interval: ${HTAP_CTX_INTERVAL}s
             # Probe scan: run a small range scan in REPEATABLE-READ, then read the
             # per-session perf context for THIS connection (fresh each interval).
             # ROCKSDB_PERF_CONTEXT is columnar — SELECT * and parse headers.
+            # Run the probe scan and perf context read in one session so that
+            # the perf context reflects this connection's scan activity.
+            # Two queries → two result sets in --batch output; use a heredoc so
+            # we can embed newlines cleanly.
             ctx=$(mysql --socket="$SOCKET" "$BENCHMARK_DB" \
-                --batch 2>/dev/null \
-                -e "SET SESSION rocksdb_perf_context_level = ${PROFILING_PERF_CONTEXT_LEVEL};
-                    SET SESSION transaction_isolation = 'REPEATABLE-READ';
-                    SET SESSION max_execution_time = 5000;
-                    SELECT COUNT(*) FROM sbtest1 WHERE k <= 1000;
-                    SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
-                    WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
-                      AND TABLE_NAME = 'sbtest1';") || true
+                --batch 2>/dev/null <<'PROBE_SQL'
+SET SESSION rocksdb_perf_context_level = 3;
+SET SESSION transaction_isolation = 'REPEATABLE-READ';
+SET SESSION max_execution_time = 5000;
+SELECT COUNT(*) FROM sbtest1 WHERE k <= 1000;
+SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'sbtest1';
+PROBE_SQL
+            ) || true
             # ROCKSDB_PERF_CONTEXT schema: (TABLE_SCHEMA, TABLE_NAME, PARTITION_NAME, STAT_TYPE, VALUE)
-            # One row per (table, metric). Find the STAT_TYPE and VALUE column indices from
-            # the header row, then pick rows where STAT_TYPE matches the desired metric name.
+            # --batch prints both result sets: COUNT(*) first, then the perf context rows.
+            # NR==1 would be the COUNT(*) header, so we must detect the perf context header
+            # by looking for the line that contains "STAT_TYPE" rather than assuming NR==1.
             _perf_ctx_val() {
                 local metric=$1
                 echo "$ctx" | awk -v m="$metric" '
-                    NR==1 {
+                    toupper($0) ~ /STAT_TYPE/ && toupper($0) ~ /VALUE/ && !st {
                         for(i=1;i<=NF;i++) {
                             if(toupper($i)=="STAT_TYPE") st=i
                             if(toupper($i)=="VALUE")     vl=i
