@@ -60,6 +60,11 @@ export MYSQL_PID_VANILLA_INNODB="/tmp/mysql_vanilla_innodb.pid"
 export MYSQL_PID_PERCONA_INNODB="/tmp/mysql_percona_innodb.pid"
 export MYSQL_PID_PERCONA_MYROCKS="/tmp/mysql_percona_myrocks.pid"
 
+# CSD simulation engine (percona-myrocks-csd): separate datadir/socket/pid from baseline
+export MYSQL_DATADIR_PERCONA_MYROCKS_CSD="${SSD_MOUNT}/mysql-percona-myrocks-csd/data"
+export MYSQL_SOCKET_PERCONA_MYROCKS_CSD="/tmp/mysql_percona_myrocks_csd.sock"
+export MYSQL_PID_PERCONA_MYROCKS_CSD="/tmp/mysql_percona_myrocks_csd.pid"
+
 # Benchmark Configuration
 export BENCHMARK_DB="benchmarkdb"
 export BENCHMARK_THREADS="1 4 16 32"

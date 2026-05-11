@@ -9,9 +9,10 @@ usage() {
 Usage: $0 <engine> <action> [--mode <mode>]
 
 Engine:
-    vanilla-innodb    - Vanilla MySQL 8.4.7 with InnoDB
-    percona-innodb    - Percona Server 8.4 with InnoDB
-    percona-myrocks   - Percona Server 8.4 with MyRocks (RocksDB)
+    vanilla-innodb         - Vanilla MySQL 8.4.7 with InnoDB
+    percona-innodb         - Percona Server 8.4 with InnoDB
+    percona-myrocks        - Percona Server 8.4 with MyRocks (RocksDB)
+    percona-myrocks-csd    - Percona Server 8.4 with MyRocks + CSD sim (/usr/local/percona-csd)
 
 Action:
     start       - Start MySQL server
@@ -61,6 +62,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Binary to use for start/init — default is the system mysqld.
+# Overridden by engines that use a custom install prefix.
+MYSQLD_BIN="mysqld"
+
 # Set engine-specific variables
 case $ENGINE in
     vanilla-innodb)
@@ -92,6 +97,13 @@ case $ENGINE in
         else
             CONFIG_FILE="${SCRIPT_DIR}/../common/config/my-percona-myrocks.cnf"
         fi
+        ;;
+    percona-myrocks-csd)
+        DATADIR="${MYSQL_DATADIR_PERCONA_MYROCKS_CSD}"
+        SOCKET="${MYSQL_SOCKET_PERCONA_MYROCKS_CSD}"
+        PID_FILE="${MYSQL_PID_PERCONA_MYROCKS_CSD}"
+        MYSQLD_BIN="/usr/local/percona-csd/bin/mysqld"
+        CONFIG_FILE="${SCRIPT_DIR}/../common/config/my-percona-myrocks-csd.cnf"
         ;;
     *)
         log_error "Unknown engine: $ENGINE"
@@ -147,15 +159,17 @@ init_mysql() {
     # For MyRocks: create a temp config without RocksDB-specific options
     # because --initialize can't use RocksDB (system tables need InnoDB, plugins not loaded yet)
     INIT_CONFIG="$CONFIG_FILE"
-    if [ "$ENGINE" = "percona-myrocks" ]; then
+    if [ "$ENGINE" = "percona-myrocks" ] || [ "$ENGINE" = "percona-myrocks-csd" ]; then
         INIT_CONFIG="/tmp/my-myrocks-init.cnf"
-        grep -v -E "^default-storage-engine|^plugin-load|^rocksdb" "$CONFIG_FILE" > "$INIT_CONFIG"
+        grep -v -E "^default-storage-engine|^plugin-load|^rocksdb|^basedir" "$CONFIG_FILE" > "$INIT_CONFIG"
+        # Inject the correct basedir so --initialize finds the right install prefix
+        echo "basedir = $(dirname "$(dirname "$MYSQLD_BIN")")" >> "$INIT_CONFIG"
         chmod 644 "$INIT_CONFIG"
     fi
 
     # Initialize MySQL
     log_info "Running mysqld --initialize-insecure..."
-    sudo mysqld --defaults-file="$INIT_CONFIG" --initialize-insecure --user=mysql || {
+    sudo "$MYSQLD_BIN" --defaults-file="$INIT_CONFIG" --initialize-insecure --user=mysql || {
         log_error "MySQL initialization failed"
         exit 1
     }
@@ -199,7 +213,7 @@ start_mysql() {
     sudo chown mysql:mysql "$ERROR_LOG"
 
     # Start MySQL with error logging
-    sudo mysqld --defaults-file="$CONFIG_FILE" --user=mysql --log-error="$ERROR_LOG" > /dev/null 2>&1 &
+    sudo "$MYSQLD_BIN" --defaults-file="$CONFIG_FILE" --user=mysql --log-error="$ERROR_LOG" > /dev/null 2>&1 &
 
     # Wait for MySQL to start (MyRocks may take longer)
     log_info "Waiting for MySQL to start..."

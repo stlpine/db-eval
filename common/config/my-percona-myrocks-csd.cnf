@@ -1,0 +1,53 @@
+[mysqld]
+# Percona Server 8.4 with MyRocks — CSD MVCC filter simulation
+# Binary: /usr/local/percona-csd/bin/mysqld  (built from feature/csd-mvcc-sim)
+user = mysql
+port = 3307
+socket = /tmp/mysql_percona_myrocks_csd.sock
+pid-file = /tmp/mysql_percona_myrocks_csd.pid
+datadir = /mnt/nvme/mysql-percona-myrocks-csd/data
+basedir = /usr/local/percona-csd
+
+# Storage Engine
+default-storage-engine = ROCKSDB
+
+# Load RocksDB Plugin
+plugin-load-add = ha_rocksdb.so
+
+# Transaction and Collation Settings (recommended for MyRocks)
+transaction-isolation = READ-COMMITTED
+character-set-server = latin1
+collation-server = latin1_bin
+
+# CSD simulation — READONLY sysvar; must be set at startup (requires restart to change).
+# When ON, column families whose name starts with 'csd_' are wrapped with
+# CsdSimTableFactory, which injects CsdSimIterator below DBIter.
+rocksdb_csd_sim_enabled = ON
+
+# Disable compression (CSD CF injection sets its own BlockBasedTableOptions with 64 KB blocks)
+rocksdb_default_cf_options = compression=kNoCompression
+
+# Enable concurrent memtable writes for better multi-core performance
+rocksdb_allow_concurrent_memtable_write = ON
+
+# Unlimited open files (avoid open/close overhead)
+rocksdb_max_open_files = -1
+
+# Enable perf context counters (level 1 = count only, minimal overhead)
+rocksdb_perf_context_level = 1
+
+# Binary log (ROW format for realistic production settings)
+binlog_format = ROW
+
+# Disable query logging for benchmarking
+slow_query_log = 0
+general_log = 0
+
+# Disable Performance Schema (standard for benchmarks)
+performance_schema = OFF
+
+# Enable LOAD DATA LOCAL INFILE for bulk loading
+local_infile = 1
+
+[client]
+socket = /tmp/mysql_percona_myrocks_csd.sock

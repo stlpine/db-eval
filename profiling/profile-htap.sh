@@ -21,7 +21,7 @@
 #
 #   cutoff      k <= cutoff value (default: $HTAP_JOIN_CUTOFF from env.sh)
 #   result_dir  Output dir (default: results/profiling/htap/<engine>/<timestamp>)
-#   engine      percona-myrocks | percona-innodb (default: percona-myrocks)
+#   engine      percona-myrocks | percona-innodb | percona-myrocks-csd (default: percona-myrocks)
 #
 # Prerequisites:
 #   - sysbench-htap data loaded: prepare-data.sh -e <engine> -b sysbench-htap
@@ -48,16 +48,29 @@ case "$ENGINE" in
         PID_FILE="${MYSQL_PID_PERCONA_MYROCKS}"
         EXPECTED_ENGINE="ROCKSDB"
         ;;
+    percona-myrocks-csd)
+        SOCKET="${MYSQL_SOCKET_PERCONA_MYROCKS_CSD}"
+        PID_FILE="${MYSQL_PID_PERCONA_MYROCKS_CSD}"
+        EXPECTED_ENGINE="ROCKSDB"
+        ;;
     percona-innodb)
         SOCKET="${MYSQL_SOCKET_PERCONA_INNODB}"
         PID_FILE="${MYSQL_PID_PERCONA_INNODB}"
         EXPECTED_ENGINE="InnoDB"
         ;;
     *)
-        echo "Unknown engine: $ENGINE (use percona-myrocks or percona-innodb)" >&2
+        echo "Unknown engine: $ENGINE (use percona-myrocks, percona-myrocks-csd, or percona-innodb)" >&2
         exit 1
         ;;
 esac
+
+# Helper: true for both MyRocks variants (share all RocksDB perf-context logic)
+IS_MYROCKS=false
+IS_CSD=false
+if [ "$ENGINE" = "percona-myrocks" ] || [ "$ENGINE" = "percona-myrocks-csd" ]; then
+    IS_MYROCKS=true
+fi
+[ "$ENGINE" = "percona-myrocks-csd" ] && IS_CSD=true
 
 RESULT_DIR="${2:-${RESULTS_DIR}/profiling/htap/${ENGINE}/$(date +%Y%m%d_%H%M%S)}"
 
@@ -127,7 +140,7 @@ capture_data_profile() {
 # Output format: "variable_name value" one per line (tab-separated from MySQL,
 # but awk matches on $1 so tab vs space doesn't matter).
 snapshot_perf_context_global() {
-    if [ "$ENGINE" = "percona-myrocks" ]; then
+    if [ "$IS_MYROCKS" = "true" ]; then
         local result
         result=$(mysql --socket="$SOCKET" --batch --skip-column-names 2>/dev/null -e "
             SELECT variable_name, variable_value
@@ -226,12 +239,15 @@ MYSQL_LIB_PATH=$(mysql_config --variable=pkglibdir 2>/dev/null || true)
 if [ "$ENGINE" = "percona-myrocks" ]; then
     echo "run,elapsed_s,cutoff,rows_scanned,internal_key_skipped_count_delta,internal_delete_skipped_count_delta,get_snapshot_time_ns_delta,block_read_count_delta,block_read_byte_delta,block_read_time_ns_delta,get_from_memtable_count_delta,get_from_output_files_time_ns_delta" \
         > "${RESULT_DIR}/htap_olap_runs.csv"
+elif [ "$ENGINE" = "percona-myrocks-csd" ]; then
+    echo "run,elapsed_s,cutoff,rows_scanned,internal_key_skipped_count_delta,internal_delete_skipped_count_delta,get_snapshot_time_ns_delta,block_read_count_delta,block_read_byte_delta,block_read_time_ns_delta,get_from_memtable_count_delta,get_from_output_files_time_ns_delta,csd_keys_seen,csd_keys_filtered" \
+        > "${RESULT_DIR}/htap_olap_runs.csv"
 else
     echo "run,elapsed_s,cutoff,rows_scanned,handler_read_key,innodb_rows_read_delta,innodb_buffer_pool_reads_delta,innodb_buffer_pool_read_requests_delta,innodb_pages_read_delta,innodb_data_reads_delta,innodb_data_read_bytes_delta" \
         > "${RESULT_DIR}/htap_olap_runs.csv"
 fi
 
-if [ "$ENGINE" = "percona-myrocks" ]; then
+if [ "$IS_MYROCKS" = "true" ]; then
     echo "snapshot_num,elapsed_s,wall_clock_ts,internal_key_skipped_count,internal_delete_skipped_count,block_read_count,llt_count_active" \
         > "${RESULT_DIR}/htap_version_growth.csv"
 else
@@ -267,7 +283,7 @@ done
 # Capture the schema of information_schema.ROCKSDB_PERF_CONTEXT for reference.
 # Confirmed schema: key-value — (TABLE_SCHEMA, TABLE_NAME, PARTITION_NAME, STAT_TYPE, VALUE).
 # One row per (table, metric). Parsers use STAT_TYPE for lookup, VALUE for aggregation.
-if [ "$ENGINE" = "percona-myrocks" ]; then
+if [ "$IS_MYROCKS" = "true" ]; then
     log_info "Discovering ROCKSDB_PERF_CONTEXT schema..."
     {
         echo "=== DESCRIBE ==="
@@ -285,7 +301,7 @@ fi
 # ── Phase 2: Configure + Monitors ────────────────────────────────────────────
 
 PERF_CTX_USE_IS_TABLE=false
-if [ "$ENGINE" = "percona-myrocks" ]; then
+if [ "$IS_MYROCKS" = "true" ]; then
     mysql --socket="$SOCKET" \
         -e "SET GLOBAL rocksdb_perf_context_level = ${PROFILING_PERF_CONTEXT_LEVEL};" 2>/dev/null
     log_info "rocksdb_perf_context_level set to ${PROFILING_PERF_CONTEXT_LEVEL}"
@@ -450,7 +466,7 @@ log_info "Warmup complete. OLTP still running."
 # (expensive). Without flushing, FindNextUserEntry accumulates less CPU time and
 # appears smaller in the flamegraph than it would under real HTAP pressure where
 # versions have been compacted to SSTables.
-if [ "$ENGINE" = "percona-myrocks" ]; then
+if [ "$IS_MYROCKS" = "true" ]; then
     log_info "Flushing RocksDB memtable to SSTables before OLAP phase..."
     mysql --socket="$SOCKET" \
         -e "SET GLOBAL rocksdb_force_flush_memtable_now = 1;" 2>/dev/null || \
@@ -477,7 +493,7 @@ log_info "Starting version growth snapshot loop (interval: ${HTAP_CTX_INTERVAL}s
         for pid in "${LLT_PIDS[@]}"; do
             kill -0 "$pid" 2>/dev/null && llt_alive=$(( llt_alive + 1 ))
         done
-        if [ "$ENGINE" = "percona-myrocks" ]; then
+        if [ "$IS_MYROCKS" = "true" ]; then
             # information_schema.rocksdb_perf_context is per-session, not global.
             # Querying it from a background monitor always returns zeros.
             # Instead, run a small probe scan (k <= 1000, ~1% of sbtest1) in a
@@ -590,6 +606,9 @@ for RUN in $(seq 1 "$HTAP_OLAP_RUNS"); do
     # all 4 prior runs).  Instead, snapshot it WITHIN this session before and
     # after the join query.  The CTX_SPLIT sentinel separates before/after in
     # the raw output so the shell can compute per-run deltas.
+    # For the CSD engine: additionally collect global CSD counters (rocksdb_csd_sim_keys_*)
+    # around the join.  These are global atomics so they can be read from any connection,
+    # but embedding them in the same heredoc is simplest and avoids a second mysql call.
     if [ "$ENGINE" = "percona-myrocks" ]; then
         # ROCKSDB_PERF_CONTEXT schema: (TABLE_SCHEMA, TABLE_NAME, PARTITION_NAME, STAT_TYPE, VALUE).
         # Query with SELECT * filtered to the four join tables; _ctx_delta sums VALUE
@@ -613,6 +632,31 @@ ${JOIN4_CONTENT}
 SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
 WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
   AND TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4');
+SHOW SESSION STATUS LIKE 'Handler_read_first';
+SHOW SESSION STATUS LIKE 'Handler_read_next';
+SHOW SESSION STATUS LIKE 'Handler_read_rnd_next';
+SQL
+        )
+    elif [ "$ENGINE" = "percona-myrocks-csd" ]; then
+        raw_output=$(mysql --socket="$SOCKET" "$BENCHMARK_DB" \
+            --batch --force 2>/dev/null <<SQL
+SET SESSION transaction_isolation='REPEATABLE-READ';
+SET SESSION rocksdb_perf_context_level=${PROFILING_PERF_CONTEXT_LEVEL};
+SET SESSION max_execution_time=$((HTAP_QUERY_TIMEOUT * 1000));
+SET SESSION optimizer_switch='block_nested_loop=off';
+SET @htap_cutoff = ${CUTOFF};
+SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
+WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
+  AND TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4');
+SELECT 'CTX_SPLIT' AS ctx_marker;
+SHOW GLOBAL STATUS LIKE 'Rocksdb_csd_sim_keys%';
+SELECT 'CSD_SPLIT' AS csd_marker;
+FLUSH STATUS;
+${JOIN4_CONTENT}
+SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
+WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
+  AND TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4');
+SHOW GLOBAL STATUS LIKE 'Rocksdb_csd_sim_keys%';
 SHOW SESSION STATUS LIKE 'Handler_read_first';
 SHOW SESSION STATUS LIKE 'Handler_read_next';
 SHOW SESSION STATUS LIKE 'Handler_read_rnd_next';
@@ -642,14 +686,33 @@ SQL
     # We store the raw sections verbatim; _ctx_delta reads named columns below.
     ctx_before=""
     ctx_after=""
-    if [ "$ENGINE" = "percona-myrocks" ]; then
+    csd_seen_delta=0
+    csd_filt_delta=0
+    if [ "$IS_MYROCKS" = "true" ]; then
         ctx_before=$(echo "$raw_output" | awk '/^CTX_SPLIT/{exit} {print}')
         ctx_after=$(echo  "$raw_output" | awk 'f && /^Handler_/{exit} f{print} /^CTX_SPLIT/{f=1}')
     fi
 
+    # For the CSD engine: parse CSD global counter deltas from the CSD_SPLIT marker section.
+    # Layout: ctx_before | CTX_SPLIT | csd_before | CSD_SPLIT | join query | ctx_after | csd_after | Handler_*
+    if [ "$IS_CSD" = "true" ]; then
+        csd_raw_before=$(echo "$raw_output" | awk '/^CSD_SPLIT/{exit} /^CTX_SPLIT/{f=1; next} f{print}')
+        csd_raw_after=$(echo  "$raw_output" | awk 'f && /^Handler_/{exit} f{print} /^CSD_SPLIT/{f=1}' | tail -4)
+        _csd_val() {
+            local section=$1 key=$2
+            echo "$section" | awk -v k="$key" 'toupper($1)==toupper(k){print $2+0; exit}'
+        }
+        csd_seen_before=$(_csd_val "$csd_raw_before" "Rocksdb_csd_sim_keys_seen")
+        csd_filt_before=$(_csd_val "$csd_raw_before" "Rocksdb_csd_sim_keys_filtered")
+        csd_seen_after=$( _csd_val "$csd_raw_after"  "Rocksdb_csd_sim_keys_seen")
+        csd_filt_after=$( _csd_val "$csd_raw_after"  "Rocksdb_csd_sim_keys_filtered")
+        csd_seen_delta=$(awk "BEGIN{printf \"%.0f\n\", ${csd_seen_after:-0} - ${csd_seen_before:-0}}")
+        csd_filt_delta=$(awk "BEGIN{printf \"%.0f\n\", ${csd_filt_after:-0} - ${csd_filt_before:-0}}")
+    fi
+
     # Save raw output; append parsed before/after for human inspection
     echo "$raw_output" > "${RESULT_DIR}/perf_ctx_raw_run${RUN}.txt"
-    if [ "$ENGINE" = "percona-myrocks" ]; then
+    if [ "$IS_MYROCKS" = "true" ]; then
         { echo "# ctx_before"; echo "$ctx_before"; echo "# ctx_after"; echo "$ctx_after"; } \
             >> "${RESULT_DIR}/perf_ctx_raw_run${RUN}.txt"
     fi
@@ -700,7 +763,7 @@ SQL
     h_rnd=$(  _get "Handler_read_rnd_next")
     rows_scanned=$(( ${h_first:-0} + ${h_nxt:-0} + ${h_rnd:-0} ))
 
-    if [ "$ENGINE" = "percona-myrocks" ]; then
+    if [ "$IS_MYROCKS" = "true" ]; then
         # Column names match RocksDB PerfContext field names (case-insensitive).
         # The schema discovery file (rocksdb_perf_ctx_schema.txt) from this run
         # will confirm the exact names used by this Percona build.
@@ -712,10 +775,19 @@ SQL
         brt_delta=$(   _ctx_delta "block_read_time")
         gfmc_delta=$(  _ctx_delta "get_from_memtable_count")
         gfoft_delta=$( _ctx_delta "get_from_output_files_time")
-        printf "  run=%d elapsed=%.1fs | rows_scanned=%s | key_skipped=%s | block_reads=%s | llt_alive=%d\n" \
-            "$RUN" "$elapsed" "$rows_scanned" "${iksc_delta:-0}" "${brc_delta:-0}" "$llt_alive"
-        echo "${RUN},${elapsed},${CUTOFF},${rows_scanned},${iksc_delta:-0},${idsc_delta:-0},${gst_delta:-0},${brc_delta:-0},${brb_delta:-0},${brt_delta:-0},${gfmc_delta:-0},${gfoft_delta:-0}" \
-            >> "${RESULT_DIR}/htap_olap_runs.csv"
+        if [ "$IS_CSD" = "true" ]; then
+            csd_ratio=$(awk "BEGIN{s=${csd_seen_delta:-0}; if(s>0) printf \"%.3f\", ${csd_filt_delta:-0}/s; else print \"N/A\"}")
+            printf "  run=%d elapsed=%.1fs | rows_scanned=%s | key_skipped=%s | csd_filtered=%s/%s (ratio=%s) | llt_alive=%d\n" \
+                "$RUN" "$elapsed" "$rows_scanned" "${iksc_delta:-0}" \
+                "${csd_filt_delta:-0}" "${csd_seen_delta:-0}" "$csd_ratio" "$llt_alive"
+            echo "${RUN},${elapsed},${CUTOFF},${rows_scanned},${iksc_delta:-0},${idsc_delta:-0},${gst_delta:-0},${brc_delta:-0},${brb_delta:-0},${brt_delta:-0},${gfmc_delta:-0},${gfoft_delta:-0},${csd_seen_delta:-0},${csd_filt_delta:-0}" \
+                >> "${RESULT_DIR}/htap_olap_runs.csv"
+        else
+            printf "  run=%d elapsed=%.1fs | rows_scanned=%s | key_skipped=%s | block_reads=%s | llt_alive=%d\n" \
+                "$RUN" "$elapsed" "$rows_scanned" "${iksc_delta:-0}" "${brc_delta:-0}" "$llt_alive"
+            echo "${RUN},${elapsed},${CUTOFF},${rows_scanned},${iksc_delta:-0},${idsc_delta:-0},${gst_delta:-0},${brc_delta:-0},${brb_delta:-0},${brt_delta:-0},${gfmc_delta:-0},${gfoft_delta:-0}" \
+                >> "${RESULT_DIR}/htap_olap_runs.csv"
+        fi
     else
         _delta() {
             local varname=$1

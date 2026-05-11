@@ -9,14 +9,14 @@
 #   guard prevents simultaneous loading.
 #
 # Usage: ./sysbench-htap/prepare.sh <engine>
-#   engine: percona-innodb | percona-myrocks
+#   engine: percona-innodb | percona-myrocks | percona-myrocks-csd
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../common/config/env.sh"
 
 usage() {
     echo "Usage: $0 <engine>"
-    echo "Engines: percona-innodb, percona-myrocks"
+    echo "Engines: percona-innodb, percona-myrocks, percona-myrocks-csd"
     exit 1
 }
 
@@ -33,6 +33,10 @@ case $ENGINE in
         ;;
     percona-myrocks)
         SOCKET="${MYSQL_SOCKET_PERCONA_MYROCKS}"
+        STORAGE_ENGINE="rocksdb"
+        ;;
+    percona-myrocks-csd)
+        SOCKET="${MYSQL_SOCKET_PERCONA_MYROCKS_CSD}"
         STORAGE_ENGINE="rocksdb"
         ;;
     *)
@@ -104,5 +108,26 @@ mysql --socket="$SOCKET" "$BENCHMARK_DB" -e "
     WHERE table_schema = '$BENCHMARK_DB'
     GROUP BY table_schema;
 "
+
+# For CSD sim: move OLAP tables (sbtest1–4, the join query targets) to the 'csd_olap'
+# column family. This triggers CF creation with CsdSimTableFactory (because the CSD
+# binary was started with rocksdb_csd_sim_enabled=ON, which wraps any CF whose name
+# starts with 'csd_' at CF creation time). sbtest5–12 stay in 'default' CF and are
+# used only by the OLTP background load — the CSD filter does not need to cover them.
+if [ "$ENGINE" = "percona-myrocks-csd" ]; then
+    log_info "Migrating OLAP tables (sbtest1–4) to csd_olap CF for CSD filter coverage..."
+    for N in 1 2 3 4; do
+        log_info "  ALTER TABLE sbtest${N} COMMENT='cfname=csd_olap' ..."
+        mysql --socket="$SOCKET" "$BENCHMARK_DB" \
+            -e "ALTER TABLE sbtest${N} COMMENT='cfname=csd_olap';" || \
+            log_error "  WARNING: CF migration failed for sbtest${N} (non-fatal)"
+    done
+    log_info "CF migration complete — sbtest1–4 are now in csd_olap CF"
+    # Verify
+    mysql --socket="$SOCKET" "$BENCHMARK_DB" \
+        -e "SELECT TABLE_NAME, CREATE_OPTIONS FROM information_schema.TABLES
+            WHERE TABLE_SCHEMA='${BENCHMARK_DB}' AND TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4');" \
+        2>/dev/null || true
+fi
 
 log_info "Data preparation for $ENGINE completed successfully"
