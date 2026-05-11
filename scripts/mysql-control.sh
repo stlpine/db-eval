@@ -160,7 +160,7 @@ init_mysql() {
     # because --initialize can't use RocksDB (system tables need InnoDB, plugins not loaded yet)
     INIT_CONFIG="$CONFIG_FILE"
     if [ "$ENGINE" = "percona-myrocks" ] || [ "$ENGINE" = "percona-myrocks-csd" ]; then
-        INIT_CONFIG="/tmp/my-myrocks-init.cnf"
+        INIT_CONFIG="/tmp/my-${ENGINE}-init.cnf"
         grep -v -E "^default-storage-engine|^plugin-load|^rocksdb|^basedir" "$CONFIG_FILE" > "$INIT_CONFIG"
         # Inject the correct basedir so --initialize finds the right install prefix
         echo "basedir = $(dirname "$(dirname "$MYSQLD_BIN")")" >> "$INIT_CONFIG"
@@ -169,7 +169,7 @@ init_mysql() {
 
     # Initialize MySQL
     log_info "Running mysqld --initialize-insecure..."
-    sudo "$MYSQLD_BIN" --defaults-file="$INIT_CONFIG" --initialize-insecure --user=mysql || {
+    sudo "$MYSQLD_BIN" --defaults-file="$INIT_CONFIG" --datadir="$DATADIR" --initialize-insecure --user=mysql || {
         log_error "MySQL initialization failed"
         exit 1
     }
