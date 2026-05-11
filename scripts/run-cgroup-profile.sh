@@ -46,7 +46,7 @@ Usage: $0 [options]
 Options:
     -t, --type <type>       Profiling type (required): oltp | olap | sysbench | clickbench | htap
     -e, --engine <engine>   Storage engine (default: percona-myrocks)
-                            Options: percona-myrocks | percona-innodb
+                            Options: percona-myrocks | percona-innodb | percona-myrocks-csd
     -q, --queries <list>    olap: TPC-H query numbers, space-separated (default: "${PROFILING_OLAP_QUERIES}")
                             clickbench: query numbers, space-separated (default: "3 8 14 17")
     --threads <n>           oltp/sysbench: thread count (default: 32)
@@ -70,6 +70,8 @@ Examples:
     $0 -t htap -e percona-myrocks
     $0 -t htap -e percona-myrocks --cutoff 10000
     $0 -t htap --skip-prepare -e percona-myrocks
+    $0 -t htap -e percona-myrocks-csd
+    $0 -t htap --skip-prepare -e percona-myrocks-csd
 EOF
     exit 1
 }
@@ -159,12 +161,17 @@ case $TYPE in
 esac
 
 case $ENGINE in
-    percona-myrocks|percona-innodb) ;;
+    percona-myrocks|percona-innodb|percona-myrocks-csd) ;;
     *)
-        log_error "Invalid engine: $ENGINE (must be percona-myrocks or percona-innodb)"
+        log_error "Invalid engine: $ENGINE (must be percona-myrocks, percona-innodb, or percona-myrocks-csd)"
         usage
         ;;
 esac
+
+if [ "$ENGINE" = "percona-myrocks-csd" ] && [ "$TYPE" != "htap" ]; then
+    log_error "percona-myrocks-csd only supports -t htap"
+    exit 1
+fi
 
 # ── Cgroup check (same as run-cgroup.sh) ─────────────────────────────────────
 

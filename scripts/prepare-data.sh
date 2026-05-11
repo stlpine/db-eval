@@ -32,6 +32,7 @@ Options:
                               - vanilla-innodb
                               - percona-innodb
                               - percona-myrocks
+                              - percona-myrocks-csd (htap only; uses /usr/local/percona-csd)
     --from-backup             Restore data from backup SSD instead of full preparation
     -j, --jobs <num>          Number of parallel copy jobs for restore (default: 96)
     --skip-reset              Skip SSD reset (use existing data directory)
@@ -94,7 +95,7 @@ done
 
 # Validate engine
 case $ENGINE in
-    vanilla-innodb|percona-innodb|percona-myrocks)
+    vanilla-innodb|percona-innodb|percona-myrocks|percona-myrocks-csd)
         ;;
     *)
         log_error "Invalid engine: $ENGINE"
@@ -114,6 +115,9 @@ get_datadir() {
             ;;
         percona-myrocks)
             echo "${MYSQL_DATADIR_PERCONA_MYROCKS}"
+            ;;
+        percona-myrocks-csd)
+            echo "${MYSQL_DATADIR_PERCONA_MYROCKS_CSD}"
             ;;
     esac
 }
@@ -318,7 +322,7 @@ echo ""
 
 # Stop ALL benchmark MySQL instances (not just current engine)
 # This prevents SSD busy errors when switching between engines
-for eng in vanilla-innodb percona-innodb percona-myrocks; do
+for eng in vanilla-innodb percona-innodb percona-myrocks percona-myrocks-csd; do
     ensure_mysql_stopped "$eng"
 done
 
