@@ -116,18 +116,26 @@ mysql --socket="$SOCKET" "$BENCHMARK_DB" -e "
 # used only by the OLTP background load — the CSD filter does not need to cover them.
 if [ "$ENGINE" = "percona-myrocks-csd" ]; then
     log_info "Migrating OLAP tables (sbtest1–4) to csd_olap CF for CSD filter coverage..."
+    log_info "  (ENGINE=ROCKSDB forces SST rebuild into new CF; bare COMMENT= only updates metadata)"
     for N in 1 2 3 4; do
-        log_info "  ALTER TABLE sbtest${N} COMMENT='cfname=csd_olap' ..."
+        log_info "  ALTER TABLE sbtest${N} ENGINE=ROCKSDB COMMENT='cfname=csd_olap' ..."
         mysql --socket="$SOCKET" "$BENCHMARK_DB" \
-            -e "ALTER TABLE sbtest${N} COMMENT='cfname=csd_olap';" || \
+            -e "ALTER TABLE sbtest${N} ENGINE=ROCKSDB COMMENT='cfname=csd_olap';" || \
             log_error "  WARNING: CF migration failed for sbtest${N} (non-fatal)"
     done
     log_info "CF migration complete — sbtest1–4 are now in csd_olap CF"
-    # Verify
+    # Verify: SHOW TABLE STATUS COMMENT reflects the CF name for MyRocks tables
     mysql --socket="$SOCKET" "$BENCHMARK_DB" \
-        -e "SELECT TABLE_NAME, CREATE_OPTIONS FROM information_schema.TABLES
+        -e "SELECT TABLE_NAME, TABLE_COMMENT FROM information_schema.TABLES
             WHERE TABLE_SCHEMA='${BENCHMARK_DB}' AND TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4');" \
         2>/dev/null || true
+    # Also confirm via RocksDB index map
+    mysql --socket="$SOCKET" \
+        -e "SELECT TABLE_NAME, INDEX_NAME, CF
+            FROM information_schema.rocksdb_index_file_map
+            WHERE TABLE_SCHEMA='${BENCHMARK_DB}' AND TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4')
+            GROUP BY TABLE_NAME, INDEX_NAME, CF;" \
+        2>/dev/null | head -20 || true
 fi
 
 log_info "Data preparation for $ENGINE completed successfully"
