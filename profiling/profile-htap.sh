@@ -618,10 +618,6 @@ for RUN in $(seq 1 "$HTAP_OLAP_RUNS"); do
 SET SESSION transaction_isolation='REPEATABLE-READ';
 SET SESSION rocksdb_perf_context_level=${PROFILING_PERF_CONTEXT_LEVEL};
 SET SESSION max_execution_time=$((HTAP_QUERY_TIMEOUT * 1000));
--- Force hash join so the plan is consistent across all 5 runs regardless of
--- MyRocks' inaccurate TABLE_ROWS estimates at cold start (run 1 would otherwise
--- use block nested loop, scanning ~400k rows instead of the hash-join ~300k).
-SET SESSION optimizer_switch='block_nested_loop=off';
 SET @htap_cutoff = ${CUTOFF};
 SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
 WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
@@ -643,7 +639,6 @@ SQL
 SET SESSION transaction_isolation='REPEATABLE-READ';
 SET SESSION rocksdb_perf_context_level=${PROFILING_PERF_CONTEXT_LEVEL};
 SET SESSION max_execution_time=$((HTAP_QUERY_TIMEOUT * 1000));
-SET SESSION optimizer_switch='block_nested_loop=off';
 SET @htap_cutoff = ${CUTOFF};
 SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
 WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
