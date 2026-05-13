@@ -129,15 +129,14 @@ umount_ssd() {
     CURRENT_MOUNT=$(findmnt -n -o TARGET "$SSD_DEVICE")
     log_info "Unmounting $CURRENT_MOUNT"
 
-    sudo umount "$CURRENT_MOUNT"
-
-    if [ $? -eq 0 ]; then
+    if sudo umount "$CURRENT_MOUNT"; then
         log_info "SSD unmounted successfully"
     else
-        log_error "Failed to unmount SSD"
+        log_info "Normal unmount busy, retrying with lazy unmount..."
         log_error "Check if any processes are using the mount point:"
         lsof +D "$CURRENT_MOUNT" 2>/dev/null || true
-        exit 1
+        sudo umount -l "$CURRENT_MOUNT" || { log_error "Unmount failed"; exit 1; }
+        log_info "Lazy unmount succeeded"
     fi
 }
 
@@ -257,7 +256,13 @@ reset_ssd() {
     if findmnt -n "$SSD_DEVICE" &>/dev/null; then
         CURRENT_MOUNT=$(findmnt -n -o TARGET "$SSD_DEVICE")
         log_info "Unmounting $CURRENT_MOUNT"
-        sudo umount "$CURRENT_MOUNT" || { log_error "Unmount failed"; exit 1; }
+        if ! sudo umount "$CURRENT_MOUNT"; then
+            log_info "Normal unmount busy, retrying with lazy unmount..."
+            log_info "Processes holding $CURRENT_MOUNT open:"
+            sudo lsof +D "$CURRENT_MOUNT" 2>/dev/null || true
+            sudo umount -l "$CURRENT_MOUNT" || { log_error "Unmount failed"; exit 1; }
+            log_info "Lazy unmount succeeded"
+        fi
     fi
 
     # NVMe format
