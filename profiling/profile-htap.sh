@@ -648,6 +648,7 @@ SHOW GLOBAL STATUS LIKE 'Rocksdb_csd_sim_keys%';
 SELECT 'CSD_SPLIT' AS csd_marker;
 FLUSH STATUS;
 ${JOIN4_CONTENT}
+SELECT 'QUERY_DONE' AS done_marker;
 SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
 WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
   AND TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4');
@@ -688,11 +689,26 @@ SQL
         ctx_after=$(echo  "$raw_output" | awk 'f && /^Handler_/{exit} f{print} /^CTX_SPLIT/{f=1}')
     fi
 
+    # For the CSD engine: override ctx_after to use the QUERY_DONE sentinel instead of
+    # CTX_SPLIT.  The CSD SQL layout is:
+    #   ctx_before | CTX_SPLIT | csd_before | CSD_SPLIT | join query | QUERY_DONE |
+    #   ctx_after (ROCKSDB_PERF_CONTEXT) | csd_after (SHOW GLOBAL STATUS) | Handler_*
+    #
+    # Using CTX_SPLIT as the delimiter (as the generic IS_MYROCKS path does) is wrong
+    # for CSD because the first content after CTX_SPLIT is the csd_before SHOW GLOBAL
+    # STATUS block (header: "Variable_name\tValue").  _ctx_delta's awk reads column
+    # indices only at NR==1, so it finds "Variable_name/Value" instead of the
+    # "STAT_TYPE/VALUE" columns it needs, and returns 0 for the after-value, making
+    # every delta negative (0 - bv_before).  Using QUERY_DONE skips directly to the
+    # ROCKSDB_PERF_CONTEXT block that immediately follows the join query.
+    if [ "$IS_CSD" = "true" ]; then
+        ctx_after=$(echo "$raw_output" | awk 'f && /^Variable_name/{exit} f{print} /^QUERY_DONE/{f=1}')
+    fi
+
     # For the CSD engine: parse CSD global counter deltas from the CSD_SPLIT marker section.
-    # Layout: ctx_before | CTX_SPLIT | csd_before | CSD_SPLIT | join query | ctx_after | csd_after | Handler_*
     if [ "$IS_CSD" = "true" ]; then
         csd_raw_before=$(echo "$raw_output" | awk '/^CSD_SPLIT/{exit} /^CTX_SPLIT/{f=1; next} f{print}')
-        csd_raw_after=$(echo  "$raw_output" | awk 'f && /^Handler_/{exit} f{print} /^CSD_SPLIT/{f=1}' | tail -4)
+        csd_raw_after=$(echo  "$raw_output" | awk 'f && /^Handler_/{exit} f{print} /^QUERY_DONE/{f=1}' | tail -4)
         _csd_val() {
             local section=$1 key=$2
             echo "$section" | awk -v k="$key" 'toupper($1)==toupper(k){print $2+0; exit}'
