@@ -19,12 +19,12 @@ transaction-isolation = READ-COMMITTED
 character-set-server = latin1
 collation-server = latin1_bin
 
-# CSD simulation — READONLY sysvar; must be set at startup (requires restart to change).
-# When ON, column families whose name starts with 'csd_' are wrapped with
-# CsdSimTableFactory, which injects CsdSimIterator below DBIter.
+# CSD simulation — dynamically settable via SET GLOBAL rocksdb_csd_sim_enabled.
+# When ON, all user column families are wrapped with CsdSimTableFactory,
+# which injects CsdSimIterator below DBIter for forward user scans.
 rocksdb_csd_sim_enabled = ON
 
-# Disable compression (CSD CF injection sets its own BlockBasedTableOptions with 64 KB blocks)
+# Disable compression (keeps SST layout simple; comparable to baseline myrocks config)
 rocksdb_default_cf_options = compression=kNoCompression
 
 # Enable concurrent memtable writes for better multi-core performance

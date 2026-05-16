@@ -369,7 +369,9 @@ CONFIG_LOG="${RESULT_DIR}/profiling_config.log"
     echo "NOTE: Analytical sessions use REPEATABLE-READ (per AIDE §6.3 + LLT paper §5.1)"
     echo "NOTE: Memtable flushed before OLAP phase + 30s compaction settling wait (ensures versions in SSTables, stable background I/O)"
     echo "NOTE: ANALYZE TABLE run before OLAP loop to stabilise optimizer row estimates (MyRocks SST sampling unreliable)"
-    echo "NOTE: RocksDB perf context captured PER-SESSION inside OLAP heredoc (CTX_SPLIT sentinel) — NOT from external monitor"
+    echo "NOTE: RocksDB perf context captured PER-SESSION inside OLAP heredoc (CTX_SPLIT/TABLE_SCHEMA anchors) — NOT from external monitor"
+    echo "NOTE: CSD engine ctx_after parsed via second TABLE_SCHEMA header (QUERY_DONE not emitted by MySQL 8.4 batch mode)"
+    echo "NOTE: CSD sim counters (rocksdb_csd_sim_keys_seen/filtered) are global atomics; deltas computed from head-2/tail-2 of SHOW GLOBAL STATUS output"
     echo "NOTE: Version growth loop uses probe scan (sbtest1 k<=1000) to measure per-probe internal_key_skipped_count growth; awk detects STAT_TYPE header by content (not NR==1) to handle multi-result-set --batch output"
     echo ""
     echo "============================================================"
@@ -607,8 +609,8 @@ for RUN in $(seq 1 "$HTAP_OLAP_RUNS"); do
     # after the join query.  The CTX_SPLIT sentinel separates before/after in
     # the raw output so the shell can compute per-run deltas.
     # For the CSD engine: additionally collect global CSD counters (rocksdb_csd_sim_keys_*)
-    # around the join.  These are global atomics so they can be read from any connection,
-    # but embedding them in the same heredoc is simplest and avoids a second mysql call.
+    # around the join.  These are global atomics incremented by CsdSimIterator destructors
+    # and are read via SHOW GLOBAL STATUS before and after the join query.
     if [ "$ENGINE" = "percona-myrocks" ]; then
         # ROCKSDB_PERF_CONTEXT schema: (TABLE_SCHEMA, TABLE_NAME, PARTITION_NAME, STAT_TYPE, VALUE).
         # Query with SELECT * filtered to the four join tables; _ctx_delta sums VALUE
@@ -648,7 +650,6 @@ SHOW GLOBAL STATUS LIKE 'Rocksdb_csd_sim_keys%';
 SELECT 'CSD_SPLIT' AS csd_marker;
 FLUSH STATUS;
 ${JOIN4_CONTENT}
-SELECT 'QUERY_DONE' AS done_marker;
 SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
 WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
   AND TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4');
@@ -689,26 +690,26 @@ SQL
         ctx_after=$(echo  "$raw_output" | awk 'f && /^Handler_/{exit} f{print} /^CTX_SPLIT/{f=1}')
     fi
 
-    # For the CSD engine: override ctx_after to use the QUERY_DONE sentinel instead of
-    # CTX_SPLIT.  The CSD SQL layout is:
-    #   ctx_before | CTX_SPLIT | csd_before | CSD_SPLIT | join query | QUERY_DONE |
-    #   ctx_after (ROCKSDB_PERF_CONTEXT) | csd_after (SHOW GLOBAL STATUS) | Handler_*
+    # For the CSD engine: override ctx_after using the second TABLE_SCHEMA header as
+    # anchor.  The CSD SQL layout is:
+    #   ctx_before (TABLE_SCHEMA) | CTX_SPLIT | csd_before | CSD_SPLIT |
+    #   join query | ctx_after (TABLE_SCHEMA) | csd_after (Variable_name) | Handler_*
     #
-    # Using CTX_SPLIT as the delimiter (as the generic IS_MYROCKS path does) is wrong
-    # for CSD because the first content after CTX_SPLIT is the csd_before SHOW GLOBAL
-    # STATUS block (header: "Variable_name\tValue").  _ctx_delta's awk reads column
-    # indices only at NR==1, so it finds "Variable_name/Value" instead of the
-    # "STAT_TYPE/VALUE" columns it needs, and returns 0 for the after-value, making
-    # every delta negative (0 - bv_before).  Using QUERY_DONE skips directly to the
-    # ROCKSDB_PERF_CONTEXT block that immediately follows the join query.
+    # MySQL 8.4 batch mode does not emit the join query's result row in the captured
+    # output, so QUERY_DONE (removed) cannot serve as a reliable sentinel.  The second
+    # TABLE_SCHEMA line is the ctx_after ROCKSDB_PERF_CONTEXT header; we stop at the
+    # first Variable_name that follows it (the csd_after SHOW GLOBAL STATUS block).
     if [ "$IS_CSD" = "true" ]; then
-        ctx_after=$(echo "$raw_output" | awk 'f && /^Variable_name/{exit} f{print} /^QUERY_DONE/{f=1}')
+        ctx_after=$(echo "$raw_output" | awk '/^TABLE_SCHEMA/{if(++c==2)f=1} f&&/^Variable_name/{exit} f{print}')
     fi
 
-    # For the CSD engine: parse CSD global counter deltas from the CSD_SPLIT marker section.
+    # For the CSD engine: parse CSD global counter deltas.
+    # SHOW GLOBAL STATUS LIKE 'Rocksdb_csd_sim_keys%' runs twice (before and after
+    # the join), producing exactly four matching lines in raw_output.  head -2 gives
+    # the before snapshot; tail -2 gives the after snapshot.
     if [ "$IS_CSD" = "true" ]; then
-        csd_raw_before=$(echo "$raw_output" | awk '/^CSD_SPLIT/{exit} /^CTX_SPLIT/{f=1; next} f{print}')
-        csd_raw_after=$(echo  "$raw_output" | awk 'f && /^Handler_/{exit} f{print} /^QUERY_DONE/{f=1}' | tail -4)
+        csd_raw_before=$(echo "$raw_output" | grep -i "rocksdb_csd_sim_keys" | head -2)
+        csd_raw_after=$( echo "$raw_output" | grep -i "rocksdb_csd_sim_keys" | tail -2)
         _csd_val() {
             local section=$1 key=$2
             echo "$section" | awk -v k="$key" 'toupper($1)==toupper(k){print $2+0; exit}'
