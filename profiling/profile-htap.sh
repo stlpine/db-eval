@@ -560,6 +560,8 @@ JOIN4_CONTENT=$(cat "$JOIN4_SQL")
 
 log_info "Starting OLAP profiling loop (${HTAP_OLAP_RUNS} runs, cutoff=${CUTOFF})..."
 
+declare -A PERF_ELAPSED  # elapsed time per run, used for deferred flamegraph titles
+
 for RUN in $(seq 1 "$HTAP_OLAP_RUNS"); do
     log_info "── OLAP Run ${RUN}/${HTAP_OLAP_RUNS} ──────────────────────────────"
 
@@ -677,6 +679,7 @@ SQL
 
     end_time=$(date +%s.%N)
     elapsed=$(echo "$end_time - $start_time" | bc)
+    PERF_ELAPSED[$RUN]=$elapsed
 
     # For MyRocks: split raw_output at CTX_SPLIT to get before/after perf context.
     # The ROCKSDB_PERF_CONTEXT table is columnar — column names depend on the build.
@@ -823,19 +826,31 @@ SQL
             >> "${RESULT_DIR}/htap_olap_runs.csv"
     fi
 
-    # Generate flamegraph
+    # Flamegraph generation deferred to post-loop so it does not block subsequent runs.
+    if [ ! -s "$perf_data" ]; then
+        log_error "  perf data missing or empty for run ${RUN} — flamegraph will be skipped"
+    fi
+done
+
+# ── Phase 8: Flamegraph generation (deferred) ────────────────────────────────
+log_info "=========================================="
+log_info "Generating flamegraphs (deferred — ${HTAP_OLAP_RUNS} runs)..."
+for RUN in $(seq 1 "$HTAP_OLAP_RUNS"); do
+    perf_data="${RESULT_DIR}/perf_htap_run${RUN}.data"
     if [ -s "$perf_data" ]; then
         svg="${RESULT_DIR}/flamegraph_htap_run${RUN}.svg"
+        perf_size=$(du -h "$perf_data" 2>/dev/null | cut -f1)
+        log_info "  Run ${RUN}/${HTAP_OLAP_RUNS}: processing ${perf_size} perf data..."
         sudo perf script -i "$perf_data" 2>/dev/null \
             | "${FLAMEGRAPH_DIR}/stackcollapse-perf.pl" \
             | "${FLAMEGRAPH_DIR}/flamegraph.pl" \
-                --title "${ENGINE} HTAP Join4 run${RUN} cutoff=${CUTOFF} ($(printf '%.1f' "$elapsed")s)" \
+                --title "${ENGINE} HTAP Join4 run${RUN} cutoff=${CUTOFF} ($(printf '%.1f' "${PERF_ELAPSED[$RUN]:-0}")s)" \
                 --width 1800 \
             > "$svg" || log_error "  Flamegraph generation failed for run ${RUN}"
-        log_info "  Flamegraph: $svg"
+        log_info "  Run ${RUN}/${HTAP_OLAP_RUNS}: flamegraph written → $svg"
         sudo rm -f "$perf_data"
     else
-        log_error "  perf data missing or empty for run ${RUN}, skipping flamegraph"
+        log_error "  Run ${RUN}: perf data missing or empty, skipping flamegraph"
     fi
 done
 
