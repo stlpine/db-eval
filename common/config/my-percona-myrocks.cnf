@@ -18,7 +18,9 @@ character-set-server = latin1
 collation-server = latin1_bin
 
 # Disable compression for fair architectural comparison
-rocksdb_default_cf_options = compression=kNoCompression
+#rocksdb_default_cf_options = compression=kNoCompression
+rocksdb_default_cf_options = compression=kNoCompression;block_based_table_factory={filter_policy=bloomfilter:10:false;whole_key_filtering=1}
+rocksdb_cache_index_and_filter_blocks = false
 
 # Enable concurrent memtable writes for better multi-core performance
 rocksdb_allow_concurrent_memtable_write = ON

@@ -69,7 +69,9 @@ rocksdb_db_write_buffer_size = 4G
 # Per-CF: 512MB buffers, up to 8 before stalling foreground writes.
 # Gives 4GB per CF before write stall, matching the global limit.
 # No compression for fair architectural comparison with InnoDB.
-rocksdb_default_cf_options = write_buffer_size=512m;max_write_buffer_number=8;compression=kNoCompression
+# rocksdb_default_cf_options = write_buffer_size=512m;max_write_buffer_number=8;compression=kNoCompression
+rocksdb_default_cf_options = write_buffer_size=512m;max_write_buffer_number=8;compression=kNoCompression;block_based_table_factory={filter_policy=bloomfilter:10:false;whole_key_filtering=1}
+rocksdb_cache_index_and_filter_blocks = false
 
 # ============================================
 # CONCURRENCY (tuned for 24 cores)

@@ -25,5 +25,8 @@ performance_schema = OFF
 # Enable LOAD DATA LOCAL INFILE for bulk loading
 local_infile = 1
 
+innodb_buffer_pool_size = 12G
+innodb_flush_method = O_DIRECT
+
 [client]
 socket = /tmp/mysql_percona_innodb.sock
