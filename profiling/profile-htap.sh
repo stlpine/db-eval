@@ -360,7 +360,9 @@ CONFIG_LOG="${RESULT_DIR}/profiling_config.log"
     echo "CGROUP_MEMORY_LIMIT: $CGROUP_MEMORY_LIMIT"
     echo "FLAMEGRAPH_DIR: $FLAMEGRAPH_DIR"
     echo "PERF_EVENT: cpu_core/cycles/"
-    echo "PERF_FREQ: 99 Hz"
+    echo "PERF_FREQ: 49 Hz"
+    echo "PERF_DELAY: ${HTAP_PERF_DELAY}s (skip query init before recording)"
+    echo "PERF_DURATION: ${HTAP_PERF_DURATION}s (steady-state recording window)"
     echo "PERF_CALL_GRAPH: dwarf"
     echo "NOTE: k index dropped on all tables (non-indexed join per AIDE paper)"
     echo "NOTE: LLTs hold GC back so versions accumulate across OLAP runs (version pressure visible in flamegraphs)"
@@ -388,6 +390,12 @@ if [ -z "$MYSQLD_PID" ] || ! kill -0 "$MYSQLD_PID" 2>/dev/null; then
     exit 1
 fi
 log_info "mysqld PID: $MYSQLD_PID"
+
+check_mysqld_alive() {
+    kill -0 "$MYSQLD_PID" 2>/dev/null || return 1
+    mysql --socket="$SOCKET" --batch --skip-column-names --connect-timeout=5 \
+        -e "SELECT 1;" 2>/dev/null | grep -q "^1$"
+}
 
 # ── Cleanup trap ──────────────────────────────────────────────────────────────
 
@@ -565,6 +573,12 @@ declare -A PERF_ELAPSED  # elapsed time per run, used for deferred flamegraph ti
 for RUN in $(seq 1 "$HTAP_OLAP_RUNS"); do
     log_info "── OLAP Run ${RUN}/${HTAP_OLAP_RUNS} ──────────────────────────────"
 
+    # Abort immediately if MySQL is gone — remaining runs would produce zeros
+    if ! check_mysqld_alive; then
+        log_error "MySQL is not responding — aborting remaining runs"
+        break
+    fi
+
     # Check OLTP still alive
     if ! kill -0 "$SB_PID" 2>/dev/null; then
         log_error "  WARNING: OLTP sysbench died before run ${RUN}"
@@ -596,9 +610,10 @@ for RUN in $(seq 1 "$HTAP_OLAP_RUNS"); do
 
     # Start perf record attached to mysqld
     perf_data="${RESULT_DIR}/perf_htap_run${RUN}.data"
-    sudo perf record -F 99 -p "$MYSQLD_PID" --call-graph dwarf \
+    sudo perf record -F 49 -p "$MYSQLD_PID" --call-graph dwarf \
         -e cpu_core/cycles/ \
-        -o "$perf_data" -- sleep 86400 &
+        -D $((HTAP_PERF_DELAY * 1000)) \
+        -o "$perf_data" -- sleep $((HTAP_PERF_DURATION + HTAP_PERF_DELAY)) &
     PERF_PID=$!
     sleep 0.5   # let perf attach before query starts
 

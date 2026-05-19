@@ -108,6 +108,8 @@ export HTAP_OLAP_RUNS="5"               # Analytical query runs per session
 export HTAP_JOIN_CUTOFF="90000"          # Default k <= cutoff (~90% selectivity)
 export HTAP_SELECTIVITY_CUTOFFS="1000 10000 30000 60000 90000"  # Selectivity sweep
 export HTAP_QUERY_TIMEOUT="7200"         # Max seconds per analytical query (MySQL max_execution_time)
+export HTAP_PERF_DURATION="120"          # Seconds of actual recording per OLAP run (flamegraph sample window)
+export HTAP_PERF_DELAY="30"             # Seconds to delay before recording starts (skips query init/build phase)
 
 # ClickBench Configuration (OLAP)
 export CLICKBENCH_DATA_URL="https://datasets.clickhouse.com/hits_compatible/hits.tsv.gz"
