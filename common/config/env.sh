@@ -294,6 +294,9 @@ ensure_mysql_stopped() {
         percona-myrocks)
             pid_file="${MYSQL_PID_PERCONA_MYROCKS}"
             ;;
+        percona-myrocks-csd)
+            pid_file="${MYSQL_PID_PERCONA_MYROCKS_CSD}"
+            ;;
     esac
 
     if [ -n "$pid_file" ] && [ -f "$pid_file" ]; then

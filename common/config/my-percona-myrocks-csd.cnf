@@ -1,6 +1,6 @@
 [mysqld]
 # Percona Server 8.4 with MyRocks — CSD MVCC filter simulation
-# Binary: /usr/local/percona-csd/bin/mysqld  (built from feature/csd-mvcc-sim)
+# Binary: /usr/local/percona-csd/bin/mysqld  (built from feature/cemu-integration)
 user = mysql
 port = 3307
 socket = /tmp/mysql_percona_myrocks_csd.sock
@@ -19,10 +19,10 @@ transaction-isolation = READ-COMMITTED
 character-set-server = latin1
 collation-server = latin1_bin
 
-# CSD simulation — dynamically settable via SET GLOBAL rocksdb_csd_sim_enabled.
-# When ON, all user column families are wrapped with CsdSimTableFactory,
-# which injects CsdSimIterator below DBIter for forward user scans.
-rocksdb_csd_sim_enabled = ON
+# CEMU MVCC filter pushdown — enabled per-run via SET GLOBAL rocksdb_cemu_enabled.
+# Wraps csd_-prefixed column families with CemuTableFactory; defaults to OFF
+# so the instance starts cleanly and the profiling script enables it per query.
+rocksdb_cemu_enabled = OFF
 rocksdb_cache_index_and_filter_blocks = false
 
 # Disable compression (keeps SST layout simple; comparable to baseline myrocks config)

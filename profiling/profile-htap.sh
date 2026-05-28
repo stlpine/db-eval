@@ -373,7 +373,7 @@ CONFIG_LOG="${RESULT_DIR}/profiling_config.log"
     echo "NOTE: ANALYZE TABLE run before OLAP loop to stabilise optimizer row estimates (MyRocks SST sampling unreliable)"
     echo "NOTE: RocksDB perf context captured PER-SESSION inside OLAP heredoc (CTX_SPLIT/TABLE_SCHEMA anchors) — NOT from external monitor"
     echo "NOTE: CSD engine ctx_after parsed via second TABLE_SCHEMA header (QUERY_DONE not emitted by MySQL 8.4 batch mode)"
-    echo "NOTE: CSD sim counters (rocksdb_csd_sim_keys_seen/filtered) are global atomics; deltas computed from head-2/tail-2 of SHOW GLOBAL STATUS output"
+    echo "NOTE: CEMU counters (rocksdb_cemu_keys_seen/filtered) are global atomics; deltas computed from head-2/tail-2 of SHOW GLOBAL STATUS output"
     echo "NOTE: Version growth loop uses probe scan (sbtest1 k<=1000) to measure per-probe internal_key_skipped_count growth; awk detects STAT_TYPE header by content (not NR==1) to handle multi-result-set --batch output"
     echo ""
     echo "============================================================"
@@ -625,8 +625,8 @@ for RUN in $(seq 1 "$HTAP_OLAP_RUNS"); do
     # all 4 prior runs).  Instead, snapshot it WITHIN this session before and
     # after the join query.  The CTX_SPLIT sentinel separates before/after in
     # the raw output so the shell can compute per-run deltas.
-    # For the CSD engine: additionally collect global CSD counters (rocksdb_csd_sim_keys_*)
-    # around the join.  These are global atomics incremented by CsdSimIterator destructors
+    # For the CSD engine: additionally collect global CEMU counters (rocksdb_cemu_keys_*)
+    # around the join.  These are global atomics incremented by CemuResultIterator destructors
     # and are read via SHOW GLOBAL STATUS before and after the join query.
     if [ "$ENGINE" = "percona-myrocks" ]; then
         # ROCKSDB_PERF_CONTEXT schema: (TABLE_SCHEMA, TABLE_NAME, PARTITION_NAME, STAT_TYPE, VALUE).
@@ -658,19 +658,20 @@ SQL
 SET SESSION transaction_isolation='REPEATABLE-READ';
 SET SESSION rocksdb_perf_context_level=${PROFILING_PERF_CONTEXT_LEVEL};
 SET SESSION max_execution_time=$((HTAP_QUERY_TIMEOUT * 1000));
+SET GLOBAL rocksdb_cemu_enabled = ON;
 SET @htap_cutoff = ${CUTOFF};
 SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
 WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
   AND TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4');
 SELECT 'CTX_SPLIT' AS ctx_marker;
-SHOW GLOBAL STATUS LIKE 'Rocksdb_csd_sim_keys%';
+SHOW GLOBAL STATUS LIKE 'Rocksdb_cemu_keys%';
 SELECT 'CSD_SPLIT' AS csd_marker;
 FLUSH STATUS;
 ${JOIN4_CONTENT}
 SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
 WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
   AND TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4');
-SHOW GLOBAL STATUS LIKE 'Rocksdb_csd_sim_keys%';
+SHOW GLOBAL STATUS LIKE 'Rocksdb_cemu_keys%';
 SHOW SESSION STATUS LIKE 'Handler_read_first';
 SHOW SESSION STATUS LIKE 'Handler_read_next';
 SHOW SESSION STATUS LIKE 'Handler_read_rnd_next';
@@ -721,21 +722,21 @@ SQL
         ctx_after=$(echo "$raw_output" | awk '/^TABLE_SCHEMA/{if(++c==2)f=1} f&&/^Variable_name/{exit} f{print}')
     fi
 
-    # For the CSD engine: parse CSD global counter deltas.
-    # SHOW GLOBAL STATUS LIKE 'Rocksdb_csd_sim_keys%' runs twice (before and after
+    # For the CSD engine: parse CEMU global counter deltas.
+    # SHOW GLOBAL STATUS LIKE 'Rocksdb_cemu_keys%' runs twice (before and after
     # the join), producing exactly four matching lines in raw_output.  head -2 gives
     # the before snapshot; tail -2 gives the after snapshot.
     if [ "$IS_CSD" = "true" ]; then
-        csd_raw_before=$(echo "$raw_output" | grep -i "rocksdb_csd_sim_keys" | head -2)
-        csd_raw_after=$( echo "$raw_output" | grep -i "rocksdb_csd_sim_keys" | tail -2)
+        csd_raw_before=$(echo "$raw_output" | grep -i "rocksdb_cemu_keys" | head -2)
+        csd_raw_after=$( echo "$raw_output" | grep -i "rocksdb_cemu_keys" | tail -2)
         _csd_val() {
             local section=$1 key=$2
             echo "$section" | awk -v k="$key" 'toupper($1)==toupper(k){print $2+0; exit}'
         }
-        csd_seen_before=$(_csd_val "$csd_raw_before" "Rocksdb_csd_sim_keys_seen")
-        csd_filt_before=$(_csd_val "$csd_raw_before" "Rocksdb_csd_sim_keys_filtered")
-        csd_seen_after=$( _csd_val "$csd_raw_after"  "Rocksdb_csd_sim_keys_seen")
-        csd_filt_after=$( _csd_val "$csd_raw_after"  "Rocksdb_csd_sim_keys_filtered")
+        csd_seen_before=$(_csd_val "$csd_raw_before" "Rocksdb_cemu_keys_seen")
+        csd_filt_before=$(_csd_val "$csd_raw_before" "Rocksdb_cemu_keys_filtered")
+        csd_seen_after=$( _csd_val "$csd_raw_after"  "Rocksdb_cemu_keys_seen")
+        csd_filt_after=$( _csd_val "$csd_raw_after"  "Rocksdb_cemu_keys_filtered")
         csd_seen_delta=$(awk "BEGIN{printf \"%.0f\n\", ${csd_seen_after:-0} - ${csd_seen_before:-0}}")
         csd_filt_delta=$(awk "BEGIN{printf \"%.0f\n\", ${csd_filt_after:-0} - ${csd_filt_before:-0}}")
     fi
