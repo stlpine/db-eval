@@ -240,7 +240,7 @@ if [ "$ENGINE" = "percona-myrocks" ]; then
     echo "run,elapsed_s,cutoff,rows_scanned,internal_key_skipped_count_delta,internal_delete_skipped_count_delta,get_snapshot_time_ns_delta,block_read_count_delta,block_read_byte_delta,block_read_time_ns_delta,get_from_memtable_count_delta,get_from_output_files_time_ns_delta" \
         > "${RESULT_DIR}/htap_olap_runs.csv"
 elif [ "$ENGINE" = "percona-myrocks-csd" ]; then
-    echo "run,elapsed_s,cutoff,rows_scanned,internal_key_skipped_count_delta,internal_delete_skipped_count_delta,get_snapshot_time_ns_delta,block_read_count_delta,block_read_byte_delta,block_read_time_ns_delta,get_from_memtable_count_delta,get_from_output_files_time_ns_delta,csd_keys_seen,csd_keys_filtered" \
+    echo "run,elapsed_s,cutoff,rows_scanned,internal_key_skipped_count_delta,internal_delete_skipped_count_delta,get_snapshot_time_ns_delta,block_read_count_delta,block_read_byte_delta,block_read_time_ns_delta,get_from_memtable_count_delta,get_from_output_files_time_ns_delta,csd_keys_seen,csd_keys_filtered,csd_freeze_ns" \
         > "${RESULT_DIR}/htap_olap_runs.csv"
 else
     echo "run,elapsed_s,cutoff,rows_scanned,handler_read_key,innodb_rows_read_delta,innodb_buffer_pool_reads_delta,innodb_buffer_pool_read_requests_delta,innodb_pages_read_delta,innodb_data_reads_delta,innodb_data_read_bytes_delta" \
@@ -665,6 +665,7 @@ WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
   AND TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4');
 SELECT 'CTX_SPLIT' AS ctx_marker;
 SHOW GLOBAL STATUS LIKE 'Rocksdb_cemu_keys%';
+SHOW GLOBAL STATUS LIKE 'Rocksdb_cemu_freeze%';
 SELECT 'CSD_SPLIT' AS csd_marker;
 FLUSH STATUS;
 ${JOIN4_CONTENT}
@@ -672,6 +673,7 @@ SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
 WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
   AND TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4');
 SHOW GLOBAL STATUS LIKE 'Rocksdb_cemu_keys%';
+SHOW GLOBAL STATUS LIKE 'Rocksdb_cemu_freeze%';
 SHOW SESSION STATUS LIKE 'Handler_read_first';
 SHOW SESSION STATUS LIKE 'Handler_read_next';
 SHOW SESSION STATUS LIKE 'Handler_read_rnd_next';
@@ -704,6 +706,7 @@ SQL
     ctx_after=""
     csd_seen_delta=0
     csd_filt_delta=0
+    csd_freeze_delta=0
     if [ "$IS_MYROCKS" = "true" ]; then
         ctx_before=$(echo "$raw_output" | awk '/^CTX_SPLIT/{exit} {print}')
         ctx_after=$(echo  "$raw_output" | awk 'f && /^Handler_/{exit} f{print} /^CTX_SPLIT/{f=1}')
@@ -739,6 +742,11 @@ SQL
         csd_filt_after=$( _csd_val "$csd_raw_after"  "Rocksdb_cemu_keys_filtered")
         csd_seen_delta=$(awk "BEGIN{printf \"%.0f\n\", ${csd_seen_after:-0} - ${csd_seen_before:-0}}")
         csd_filt_delta=$(awk "BEGIN{printf \"%.0f\n\", ${csd_filt_after:-0} - ${csd_filt_before:-0}}")
+        csd_freeze_raw_before=$(echo "$raw_output" | grep -i "rocksdb_cemu_freeze" | head -1)
+        csd_freeze_raw_after=$( echo "$raw_output" | grep -i "rocksdb_cemu_freeze" | tail -1)
+        csd_freeze_before=$(_csd_val "$csd_freeze_raw_before" "Rocksdb_cemu_freeze_ns")
+        csd_freeze_after=$( _csd_val "$csd_freeze_raw_after"  "Rocksdb_cemu_freeze_ns")
+        csd_freeze_delta=$(awk "BEGIN{printf \"%.0f\n\", ${csd_freeze_after:-0} - ${csd_freeze_before:-0}}")
     fi
 
     # Save raw output; append parsed before/after for human inspection
@@ -808,10 +816,10 @@ SQL
         gfoft_delta=$( _ctx_delta "get_from_output_files_time")
         if [ "$IS_CSD" = "true" ]; then
             csd_ratio=$(awk "BEGIN{s=${csd_seen_delta:-0}; if(s>0) printf \"%.3f\", ${csd_filt_delta:-0}/s; else print \"N/A\"}")
-            printf "  run=%d elapsed=%.1fs | rows_scanned=%s | key_skipped=%s | csd_filtered=%s/%s (ratio=%s) | llt_alive=%d\n" \
+            printf "  run=%d elapsed=%.1fs | rows_scanned=%s | key_skipped=%s | csd_filtered=%s/%s (ratio=%s) | freeze_ns=%s | llt_alive=%d\n" \
                 "$RUN" "$elapsed" "$rows_scanned" "${iksc_delta:-0}" \
-                "${csd_filt_delta:-0}" "${csd_seen_delta:-0}" "$csd_ratio" "$llt_alive"
-            echo "${RUN},${elapsed},${CUTOFF},${rows_scanned},${iksc_delta:-0},${idsc_delta:-0},${gst_delta:-0},${brc_delta:-0},${brb_delta:-0},${brt_delta:-0},${gfmc_delta:-0},${gfoft_delta:-0},${csd_seen_delta:-0},${csd_filt_delta:-0}" \
+                "${csd_filt_delta:-0}" "${csd_seen_delta:-0}" "$csd_ratio" "${csd_freeze_delta:-0}" "$llt_alive"
+            echo "${RUN},${elapsed},${CUTOFF},${rows_scanned},${iksc_delta:-0},${idsc_delta:-0},${gst_delta:-0},${brc_delta:-0},${brb_delta:-0},${brt_delta:-0},${gfmc_delta:-0},${gfoft_delta:-0},${csd_seen_delta:-0},${csd_filt_delta:-0},${csd_freeze_delta:-0}" \
                 >> "${RESULT_DIR}/htap_olap_runs.csv"
         else
             printf "  run=%d elapsed=%.1fs | rows_scanned=%s | key_skipped=%s | block_reads=%s | llt_alive=%d\n" \

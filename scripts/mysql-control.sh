@@ -103,7 +103,7 @@ case $ENGINE in
         SOCKET="${MYSQL_SOCKET_PERCONA_MYROCKS_CSD}"
         PID_FILE="${MYSQL_PID_PERCONA_MYROCKS_CSD}"
         MYSQLD_BIN="/usr/local/percona-csd/bin/mysqld"
-        CONFIG_FILE="${SCRIPT_DIR}/../common/config/my-percona-myrocks-csd.cnf"
+        CONFIG_FILE="${MYSQL_CSD_CONFIG_OVERRIDE:-${SCRIPT_DIR}/../common/config/my-percona-myrocks-csd.cnf}"
         ;;
     *)
         log_error "Unknown engine: $ENGINE"
@@ -213,7 +213,7 @@ start_mysql() {
     sudo chown mysql:mysql "$ERROR_LOG"
 
     # Start MySQL with error logging
-    sudo "$MYSQLD_BIN" --defaults-file="$CONFIG_FILE" --user=mysql --log-error="$ERROR_LOG" > /dev/null 2>&1 &
+    sudo "$MYSQLD_BIN" --defaults-file="$CONFIG_FILE" --user="${MYSQL_DAEMON_USER:-mysql}" --log-error="$ERROR_LOG" > /dev/null 2>&1 &
 
     # Wait for MySQL to start (MyRocks may take longer)
     log_info "Waiting for MySQL to start..."

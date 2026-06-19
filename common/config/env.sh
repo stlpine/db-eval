@@ -306,3 +306,10 @@ ensure_mysql_stopped() {
 
     sleep 2
 }
+
+# Allow VM-specific path and function overrides.
+# Set CEMU_VM_ENV to the override file path before sourcing this script
+# (export it so all subprocess scripts that source env.sh also pick it up).
+if [ -n "${CEMU_VM_ENV:-}" ] && [ -f "${CEMU_VM_ENV}" ]; then
+    source "${CEMU_VM_ENV}"
+fi

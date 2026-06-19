@@ -1,0 +1,53 @@
+[mysqld]
+# Percona Server 8.4 with MyRocks — CSD MVCC filter (QEMU VM variant)
+# Binary: /usr/local/percona-csd/bin/mysqld
+# Used by db-eval profiling scripts running inside the VM.
+user = root
+port = 3307
+socket = /tmp/mysql_csd.sock
+pid-file = /tmp/mysql_csd.pid
+datadir = /root/mysql-data
+basedir = /usr/local/percona-csd
+
+# Storage Engine
+default-storage-engine = ROCKSDB
+
+# Load RocksDB Plugin
+plugin-load-add = ha_rocksdb.so
+
+# Transaction and Collation Settings (recommended for MyRocks)
+transaction-isolation = READ-COMMITTED
+character-set-server = latin1
+collation-server = latin1_bin
+
+# CEMU MVCC filter pushdown — enabled per-run by profiling script
+rocksdb_cemu_enabled = OFF
+rocksdb_cache_index_and_filter_blocks = false
+
+# Disable compression (comparable to baseline myrocks config)
+rocksdb_default_cf_options = compression=kNoCompression;block_based_table_factory={filter_policy=bloomfilter:10:false;whole_key_filtering=1}
+
+# Enable concurrent memtable writes
+rocksdb_allow_concurrent_memtable_write = ON
+
+# Unlimited open files
+rocksdb_max_open_files = -1
+
+# Enable perf context counters (level 1 = count only, minimal overhead)
+rocksdb_perf_context_level = 1
+
+# Binary log
+binlog_format = ROW
+
+# Disable query logging for benchmarking
+slow_query_log = 0
+general_log = 0
+
+# Disable Performance Schema
+performance_schema = OFF
+
+# Enable LOAD DATA LOCAL INFILE for bulk loading
+local_infile = 1
+
+[client]
+socket = /tmp/mysql_csd.sock
