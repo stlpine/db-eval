@@ -45,8 +45,8 @@ mkdir -p "${RESULTS_DIR}"
 # Phase 1: Data preparation
 if [ "$SKIP_PREPARE" = false ]; then
     log_info "Phase 1: Preparing sysbench-htap data..."
-    bash "${SCRIPT_DIR}/mysql-control.sh" percona-myrocks-csd start
-    bash "${SCRIPT_DIR}/../sysbench-htap/prepare.sh" percona-myrocks-csd
+    bash "${SCRIPT_DIR}/mysql-control.sh" percona-myrocks-csd start || { log_error "Failed to start mysqld for data prep"; exit 1; }
+    bash "${SCRIPT_DIR}/../sysbench-htap/prepare.sh" percona-myrocks-csd || { bash "${SCRIPT_DIR}/mysql-control.sh" percona-myrocks-csd stop; exit 1; }
     bash "${SCRIPT_DIR}/mysql-control.sh" percona-myrocks-csd stop
     log_info "Data preparation complete."
 else

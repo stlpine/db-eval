@@ -20,8 +20,9 @@ transaction-isolation = READ-COMMITTED
 character-set-server = latin1
 collation-server = latin1_bin
 
-# CEMU MVCC filter pushdown — OFF at start, enabled per-run by profiling script
-rocksdb_cemu_enabled = OFF
+# CEMU MVCC filter pushdown — must match persisted CemuTableFactory in existing data
+# The profiling script controls this per-run via SET GLOBAL
+rocksdb_cemu_enabled = ON
 rocksdb_cache_index_and_filter_blocks = false
 
 # Match server-side percona-myrocks config for fair comparison
