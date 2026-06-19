@@ -154,7 +154,7 @@ init_mysql() {
     # Create parent directory and set ownership (MySQL will create data dir itself)
     PARENT_DIR="$(dirname "$DATADIR")"
     ${BENCH_SUDO-sudo} mkdir -p "$PARENT_DIR"
-    ${BENCH_SUDO-sudo} chown mysql:mysql "$PARENT_DIR" || exit 1
+    ${BENCH_SUDO-sudo} chown ${MYSQL_DAEMON_USER:-mysql}:${MYSQL_DAEMON_USER:-mysql} "$PARENT_DIR" || exit 1
 
     # For MyRocks: create a temp config without RocksDB-specific options
     # because --initialize can't use RocksDB (system tables need InnoDB, plugins not loaded yet)
@@ -204,13 +204,13 @@ start_mysql() {
     fi
 
     # Ensure mysql user owns the data directory
-    ${BENCH_SUDO-sudo} chown -R mysql:mysql "$DATADIR"
+    ${BENCH_SUDO-sudo} chown -R ${MYSQL_DAEMON_USER:-mysql}:${MYSQL_DAEMON_USER:-mysql} "$DATADIR"
 
     # Error log file
     ERROR_LOG="${DATADIR}/error.log"
     ${BENCH_SUDO-sudo} rm -f "$ERROR_LOG"
     ${BENCH_SUDO-sudo} touch "$ERROR_LOG"
-    ${BENCH_SUDO-sudo} chown mysql:mysql "$ERROR_LOG"
+    ${BENCH_SUDO-sudo} chown ${MYSQL_DAEMON_USER:-mysql}:${MYSQL_DAEMON_USER:-mysql} "$ERROR_LOG"
 
     # Start MySQL with error logging
     ${BENCH_SUDO-sudo} "$MYSQLD_BIN" --defaults-file="$CONFIG_FILE" --user="${MYSQL_DAEMON_USER:-mysql}" --log-error="$ERROR_LOG" > /dev/null 2>&1 &
