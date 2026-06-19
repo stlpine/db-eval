@@ -45,12 +45,9 @@ mkdir -p "${RESULTS_DIR}"
 # Phase 1: Data preparation
 if [ "$SKIP_PREPARE" = false ]; then
     log_info "Phase 1: Preparing sysbench-htap data..."
-    if ! mysqladmin --socket="${MYSQL_SOCKET_PERCONA_MYROCKS_CSD}" ping &>/dev/null; then
-        log_error "mysqld is not running. Start it first:"
-        log_error "  /usr/local/percona-csd/bin/mysqld --defaults-file=/root/my-csd.cnf --daemonize"
-        exit 1
-    fi
+    bash "${SCRIPT_DIR}/mysql-control.sh" percona-myrocks-csd start
     bash "${SCRIPT_DIR}/../sysbench-htap/prepare.sh" percona-myrocks-csd
+    bash "${SCRIPT_DIR}/mysql-control.sh" percona-myrocks-csd stop
     log_info "Data preparation complete."
 else
     log_info "Phase 1: Skipping data preparation (--skip-prepare)"
