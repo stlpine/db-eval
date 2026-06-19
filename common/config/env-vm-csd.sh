@@ -24,6 +24,9 @@ export RESULTS_DIR="/root/db-eval/results"
 # No dedicated SSD in VM — rootfs holds the data
 export SSD_MOUNT="/root"
 
+# Running as root inside VM — no sudo needed
+export BENCH_SUDO=""
+
 # Override SSD checks to succeed immediately (no block device check needed)
 check_ssd_device()      { return 0; }
 check_ssd_mount()       { return 0; }
