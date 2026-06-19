@@ -79,7 +79,7 @@ RESULT_DIR="${2:-${RESULTS_DIR}/profiling/htap/${ENGINE}/$(date +%Y%m%d_%H%M%S)}
 drop_page_cache() {
     log_info "Dropping OS page cache..."
     sync
-    echo 3 | ${BENCH_SUDO:-sudo} tee /proc/sys/vm/drop_caches > /dev/null
+    echo 3 | ${BENCH_SUDO-sudo} tee /proc/sys/vm/drop_caches > /dev/null
     log_info "Page cache dropped"
 }
 
@@ -200,7 +200,7 @@ log_info "=========================================="
 log_info "Checking for running MySQL service..."
 if systemctl is-active --quiet mysql 2>/dev/null; then
     log_info "MySQL service is running. Stopping it..."
-    ${BENCH_SUDO:-sudo} systemctl stop mysql
+    ${BENCH_SUDO-sudo} systemctl stop mysql
     sleep 3
     if systemctl is-active --quiet mysql 2>/dev/null; then
         log_error "Failed to stop MySQL service"
@@ -405,7 +405,7 @@ SB_PID=""
 LLT_PIDS=()
 
 cleanup() {
-    [ -n "$PERF_PID" ]     && { ${BENCH_SUDO:-sudo} kill -INT "$PERF_PID" 2>/dev/null; wait "$PERF_PID" 2>/dev/null || true; }
+    [ -n "$PERF_PID" ]     && { ${BENCH_SUDO-sudo} kill -INT "$PERF_PID" 2>/dev/null; wait "$PERF_PID" 2>/dev/null || true; }
     [ -n "$SNAPSHOT_PID" ] && { kill "$SNAPSHOT_PID" 2>/dev/null; wait "$SNAPSHOT_PID" 2>/dev/null || true; }
     for pid in "${LLT_PIDS[@]}"; do kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null || true; done
     [ -n "$SB_PID" ]       && { kill "$SB_PID" 2>/dev/null; wait "$SB_PID" 2>/dev/null || true; }
@@ -610,7 +610,7 @@ for RUN in $(seq 1 "$HTAP_OLAP_RUNS"); do
 
     # Start perf record attached to mysqld
     perf_data="${RESULT_DIR}/perf_htap_run${RUN}.data"
-    ${BENCH_SUDO:-sudo} perf record -F 49 -p "$MYSQLD_PID" --call-graph dwarf \
+    ${BENCH_SUDO-sudo} perf record -F 49 -p "$MYSQLD_PID" --call-graph dwarf \
         -e cpu_core/cycles/ \
         -D $((HTAP_PERF_DELAY * 1000)) \
         -o "$perf_data" -- sleep $((HTAP_PERF_DURATION + HTAP_PERF_DELAY)) &
@@ -773,7 +773,7 @@ SQL
     fi
 
     # Stop perf recording
-    ${BENCH_SUDO:-sudo} kill -INT "$PERF_PID" 2>/dev/null || true
+    ${BENCH_SUDO-sudo} kill -INT "$PERF_PID" 2>/dev/null || true
     wait "$PERF_PID" 2>/dev/null || true
     PERF_PID=""
 
@@ -865,14 +865,14 @@ for RUN in $(seq 1 "$HTAP_OLAP_RUNS"); do
         svg="${RESULT_DIR}/flamegraph_htap_run${RUN}.svg"
         perf_size=$(du -h "$perf_data" 2>/dev/null | cut -f1)
         log_info "  Run ${RUN}/${HTAP_OLAP_RUNS}: processing ${perf_size} perf data..."
-        ${BENCH_SUDO:-sudo} perf script -i "$perf_data" 2>/dev/null \
+        ${BENCH_SUDO-sudo} perf script -i "$perf_data" 2>/dev/null \
             | "${FLAMEGRAPH_DIR}/stackcollapse-perf.pl" \
             | "${FLAMEGRAPH_DIR}/flamegraph.pl" \
                 --title "${ENGINE} HTAP Join4 run${RUN} cutoff=${CUTOFF} ($(printf '%.1f' "${PERF_ELAPSED[$RUN]:-0}")s)" \
                 --width 1800 \
             > "$svg" || log_error "  Flamegraph generation failed for run ${RUN}"
         log_info "  Run ${RUN}/${HTAP_OLAP_RUNS}: flamegraph written → $svg"
-        ${BENCH_SUDO:-sudo} rm -f "$perf_data"
+        ${BENCH_SUDO-sudo} rm -f "$perf_data"
     else
         log_error "  Run ${RUN}: perf data missing or empty, skipping flamegraph"
     fi
