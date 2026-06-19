@@ -129,6 +129,9 @@ export PROFILING_WARMUP_DURATION="60"    # seconds of TPC-C warmup before record
 export PROFILING_RECORD_DURATION="60"    # seconds to run perf record / perf stat
 export PROFILING_OLAP_QUERIES="1 6 12 19" # TPC-H queries to profile (scan-heavy)
 export PROFILING_PERF_CONTEXT_LEVEL="3"  # RocksDB perf context verbosity (3 = full counters)
+# perf event for flamegraph recording. Server (i7-13700K hybrid) uses cpu_core/cycles/
+# to target P-cores only. QEMU VM does not expose cpu_core PMU; env-vm-csd.sh overrides to cycles.
+export PERF_EVENT="cpu_core/cycles/"
 
 # Results Directory
 export RESULTS_DIR="$(dirname $(dirname $(dirname $(readlink -f "${BASH_SOURCE[0]}"))))/results"

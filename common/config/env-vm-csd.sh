@@ -30,6 +30,9 @@ export BENCH_SUDO=""
 # Percona CSD binaries (mysqladmin, mysql, etc.) are not in the default PATH
 export PATH="/usr/local/percona-csd/bin:${PATH}"
 
+# QEMU VM does not expose the cpu_core PMU; use the generic cycles event
+export PERF_EVENT="cycles"
+
 # Override SSD checks to succeed immediately (no block device check needed)
 check_ssd_device()      { return 0; }
 check_ssd_mount()       { return 0; }

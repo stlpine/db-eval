@@ -259,6 +259,17 @@ fi
 
 start_mysql_cold
 verify_storage_engine
+
+# For CSD engine: enable before OLTP starts so that SST table readers for the
+# csd_olap CF are opened via CemuTableFactory. Setting it later (after OLTP has
+# already touched the tables) leaves the readers cached as BlockBasedTableReader.
+if [ "$IS_CSD" = "true" ]; then
+    mysql --socket="$SOCKET" \
+        -e "SET GLOBAL rocksdb_cemu_enabled = ON;" 2>/dev/null || \
+        log_error "  WARNING: failed to enable rocksdb_cemu_enabled"
+    log_info "rocksdb_cemu_enabled set to ON"
+fi
+
 capture_data_profile "$RESULT_DIR"
 
 # Stabilise optimizer statistics before any workload starts.
@@ -359,7 +370,7 @@ CONFIG_LOG="${RESULT_DIR}/profiling_config.log"
     echo "BENCHMARK_DB: $BENCHMARK_DB"
     echo "CGROUP_MEMORY_LIMIT: $CGROUP_MEMORY_LIMIT"
     echo "FLAMEGRAPH_DIR: $FLAMEGRAPH_DIR"
-    echo "PERF_EVENT: cpu_core/cycles/"
+    echo "PERF_EVENT: ${PERF_EVENT}"
     echo "PERF_FREQ: 49 Hz"
     echo "PERF_DELAY: ${HTAP_PERF_DELAY}s (skip query init before recording)"
     echo "PERF_DURATION: ${HTAP_PERF_DURATION}s (steady-state recording window)"
@@ -611,7 +622,7 @@ for RUN in $(seq 1 "$HTAP_OLAP_RUNS"); do
     # Start perf record attached to mysqld
     perf_data="${RESULT_DIR}/perf_htap_run${RUN}.data"
     ${BENCH_SUDO-sudo} perf record -F 49 -p "$MYSQLD_PID" --call-graph dwarf \
-        -e cpu_core/cycles/ \
+        -e "${PERF_EVENT}" \
         -D $((HTAP_PERF_DELAY * 1000)) \
         -o "$perf_data" -- sleep $((HTAP_PERF_DURATION + HTAP_PERF_DELAY)) &
     PERF_PID=$!
