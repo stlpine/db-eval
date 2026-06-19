@@ -27,6 +27,9 @@ export SSD_MOUNT="/root"
 # Running as root inside VM — no sudo needed
 export BENCH_SUDO=""
 
+# Percona CSD binaries (mysqladmin, mysql, etc.) are not in the default PATH
+export PATH="/usr/local/percona-csd/bin:${PATH}"
+
 # Override SSD checks to succeed immediately (no block device check needed)
 check_ssd_device()      { return 0; }
 check_ssd_mount()       { return 0; }
