@@ -110,31 +110,29 @@ mysql --socket="$SOCKET" "$BENCHMARK_DB" -e "
 "
 
 # For CSD sim: move OLAP tables (sbtest1–4, the join query targets) to the 'csd_olap'
-# column family. This triggers CF creation with CsdSimTableFactory (because the CSD
-# binary was started with rocksdb_csd_sim_enabled=ON, which wraps any CF whose name
-# starts with 'csd_' at CF creation time). sbtest5–12 stay in 'default' CF and are
-# used only by the OLTP background load — the CSD filter does not need to cover them.
+# column family. sbtest5–12 stay in 'default' CF and are used only by the OLTP
+# background load — the CSD filter does not need to cover them.
+#
+# MyRocks CF assignment is controlled by the KEY-level COMMENT, not the table-level
+# COMMENT. The correct approach is to drop and recreate the PRIMARY KEY with
+# COMMENT 'cfname=csd_olap'. ALTER TABLE ... ENGINE=ROCKSDB COMMENT='cfname=...'
+# sets the table comment only (ignored by MyRocks for CF assignment) and does NOT
+# move the table to a different CF.
 if [ "$ENGINE" = "percona-myrocks-csd" ]; then
     log_info "Migrating OLAP tables (sbtest1–4) to csd_olap CF for CSD filter coverage..."
-    log_info "  (ENGINE=ROCKSDB forces SST rebuild into new CF; bare COMMENT= only updates metadata)"
     for N in 1 2 3 4; do
-        log_info "  ALTER TABLE sbtest${N} ENGINE=ROCKSDB COMMENT='cfname=csd_olap' ..."
+        log_info "  Rebuilding PRIMARY KEY for sbtest${N} with cfname=csd_olap ..."
         mysql --socket="$SOCKET" "$BENCHMARK_DB" \
-            -e "ALTER TABLE sbtest${N} ENGINE=ROCKSDB COMMENT='cfname=csd_olap';" || \
+            -e "ALTER TABLE sbtest${N} DROP PRIMARY KEY,
+                    ADD PRIMARY KEY (id) COMMENT 'cfname=csd_olap';" || \
             log_error "  WARNING: CF migration failed for sbtest${N} (non-fatal)"
     done
     log_info "CF migration complete — sbtest1–4 are now in csd_olap CF"
-    # Verify: SHOW TABLE STATUS COMMENT reflects the CF name for MyRocks tables
-    mysql --socket="$SOCKET" "$BENCHMARK_DB" \
-        -e "SELECT TABLE_NAME, TABLE_COMMENT FROM information_schema.TABLES
-            WHERE TABLE_SCHEMA='${BENCHMARK_DB}' AND TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4');" \
-        2>/dev/null || true
-    # Also confirm via RocksDB index map
+    # Verify via RocksDB DDL
     mysql --socket="$SOCKET" \
         -e "SELECT TABLE_NAME, INDEX_NAME, CF
-            FROM information_schema.rocksdb_index_file_map
-            WHERE TABLE_SCHEMA='${BENCHMARK_DB}' AND TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4')
-            GROUP BY TABLE_NAME, INDEX_NAME, CF;" \
+            FROM information_schema.ROCKSDB_DDL
+            WHERE TABLE_SCHEMA='${BENCHMARK_DB}' AND TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4');" \
         2>/dev/null | head -20 || true
 fi
 
