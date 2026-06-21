@@ -86,6 +86,9 @@ drop_page_cache() {
 start_mysql_cold() {
     ensure_mysql_stopped "$ENGINE"
     drop_page_cache
+    # Truncate the CEMU debug log so each profiling run starts clean.
+    # Without this, tail -N shows entries from previous sessions mixed with current.
+    [ "$IS_CSD" = "true" ] && > /tmp/cemu_debug.log 2>/dev/null || true
     log_info "Starting MySQL (cold)..."
     "${SCRIPT_DIR}/../scripts/mysql-control.sh" "$ENGINE" start
     sleep 5
