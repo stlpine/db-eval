@@ -212,14 +212,19 @@ start_mysql() {
     ${BENCH_SUDO-sudo} touch "$ERROR_LOG"
     ${BENCH_SUDO-sudo} chown ${MYSQL_DAEMON_USER:-mysql}:${MYSQL_DAEMON_USER:-mysql} "$ERROR_LOG"
 
-    # Start MySQL with error logging
-    ${BENCH_SUDO-sudo} "$MYSQLD_BIN" --defaults-file="$CONFIG_FILE" --user="${MYSQL_DAEMON_USER:-mysql}" --log-error="$ERROR_LOG" > /dev/null 2>&1 &
+    # Start MySQL with --daemonize so it forks and writes the pid file
+    ${BENCH_SUDO-sudo} "$MYSQLD_BIN" --defaults-file="$CONFIG_FILE" --user="${MYSQL_DAEMON_USER:-mysql}" --log-error="$ERROR_LOG" --daemonize
 
     # Wait for MySQL to start (MyRocks may take longer)
     log_info "Waiting for MySQL to start..."
     TIMEOUT=60
     for i in $(seq 1 $TIMEOUT); do
         if mysqladmin --socket="$SOCKET" ping &>/dev/null; then
+            # Socket is up; wait briefly for pid file (written slightly after socket)
+            for j in $(seq 1 10); do
+                [ -f "$PID_FILE" ] && break
+                sleep 1
+            done
             log_info "MySQL started successfully with $ENGINE engine"
             return 0
         fi
