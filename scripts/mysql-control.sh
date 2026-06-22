@@ -212,8 +212,11 @@ start_mysql() {
     ${BENCH_SUDO-sudo} touch "$ERROR_LOG"
     ${BENCH_SUDO-sudo} chown ${MYSQL_DAEMON_USER:-mysql}:${MYSQL_DAEMON_USER:-mysql} "$ERROR_LOG"
 
-    # Start MySQL with --daemonize so it forks and writes the pid file
-    ${BENCH_SUDO-sudo} "$MYSQLD_BIN" --defaults-file="$CONFIG_FILE" --user="${MYSQL_DAEMON_USER:-mysql}" --log-error="$ERROR_LOG" --daemonize
+    # Start MySQL in the background; --daemonize is not used because it is
+    # incompatible with this VM environment (process is immediately SIGKILL'd).
+    # The pid file wait loop below handles the race between socket readiness
+    # and pid file creation.
+    ${BENCH_SUDO-sudo} "$MYSQLD_BIN" --defaults-file="$CONFIG_FILE" --user="${MYSQL_DAEMON_USER:-mysql}" --log-error="$ERROR_LOG" > /dev/null 2>&1 &
 
     # Wait for MySQL to start (MyRocks may take longer)
     log_info "Waiting for MySQL to start..."
