@@ -25,18 +25,14 @@ collation-server = latin1_bin
 rocksdb_cemu_enabled = ON
 rocksdb_cache_index_and_filter_blocks = false
 
-# Match server-side percona-myrocks config for fair comparison
-rocksdb_default_cf_options = compression=kNoCompression;block_based_table_factory={filter_policy=bloomfilter:10:false;whole_key_filtering=1}
+# Match server-side percona-myrocks config for fair comparison.
+# target_file_size_base and write_buffer_size are per-CF options — they must be
+# set inside rocksdb_default_cf_options, not as standalone mysqld variables.
+# 32MB cap ensures all SSTs stay within the FDMFS pre-allocated file limit so
+# the CSD path covers every SST; must be in effect before data prep runs.
+rocksdb_default_cf_options = compression=kNoCompression;block_based_table_factory={filter_policy=bloomfilter:10:false;whole_key_filtering=1};target_file_size_base=33554432;write_buffer_size=33554432
 rocksdb_allow_concurrent_memtable_write = ON
 rocksdb_max_open_files = -1
-
-# Cap SST file size at 32MB to match FDMFS pre-allocated file limit.
-# FDMFS files (/mnt/fdm0/0..31) are each 32MB; SSTs larger than this fall back
-# to the regular iterator and bypass CSD entirely. Must be set before data prep
-# so all initial SSTs are within the limit; runtime SET GLOBAL is not enough
-# because data already loaded with 64MB SSTs will not be re-compacted automatically.
-rocksdb_target_file_size_base = 33554432
-rocksdb_write_buffer_size = 33554432
 
 # Enable perf context counters (level 1 = count only, minimal overhead)
 rocksdb_perf_context_level = 1
