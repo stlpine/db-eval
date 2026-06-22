@@ -30,6 +30,14 @@ rocksdb_default_cf_options = compression=kNoCompression;block_based_table_factor
 rocksdb_allow_concurrent_memtable_write = ON
 rocksdb_max_open_files = -1
 
+# Cap SST file size at 32MB to match FDMFS pre-allocated file limit.
+# FDMFS files (/mnt/fdm0/0..31) are each 32MB; SSTs larger than this fall back
+# to the regular iterator and bypass CSD entirely. Must be set before data prep
+# so all initial SSTs are within the limit; runtime SET GLOBAL is not enough
+# because data already loaded with 64MB SSTs will not be re-compacted automatically.
+rocksdb_target_file_size_base = 33554432
+rocksdb_write_buffer_size = 33554432
+
 # Enable perf context counters (level 1 = count only, minimal overhead)
 rocksdb_perf_context_level = 1
 
