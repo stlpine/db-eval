@@ -377,7 +377,7 @@ CONFIG_LOG="${RESULT_DIR}/profiling_config.log"
     echo "PERF_FREQ: 49 Hz"
     echo "PERF_DELAY: ${HTAP_PERF_DELAY}s (skip query init before recording)"
     echo "PERF_DURATION: ${HTAP_PERF_DURATION}s (steady-state recording window)"
-    echo "PERF_CALL_GRAPH: dwarf"
+    echo "PERF_CALL_GRAPH: ${PERF_CALL_GRAPH:-dwarf}"
     echo "NOTE: k index dropped on all tables (non-indexed join per AIDE paper)"
     echo "NOTE: LLTs hold GC back so versions accumulate across OLAP runs (version pressure visible in flamegraphs)"
     echo "NOTE: LLT sleep = HTAP_WARMUP_DURATION + HTAP_OLAP_RUNS * HTAP_QUERY_TIMEOUT = $((HTAP_WARMUP_DURATION + HTAP_OLAP_RUNS * HTAP_QUERY_TIMEOUT))s (covers full experimental window)"
@@ -624,7 +624,7 @@ for RUN in $(seq 1 "$HTAP_OLAP_RUNS"); do
 
     # Start perf record attached to mysqld
     perf_data="${RESULT_DIR}/perf_htap_run${RUN}.data"
-    ${BENCH_SUDO-sudo} perf record -F 49 -p "$MYSQLD_PID" --call-graph dwarf \
+    ${BENCH_SUDO-sudo} perf record -F 49 -p "$MYSQLD_PID" --call-graph "${PERF_CALL_GRAPH:-dwarf}" \
         -e "${PERF_EVENT}" \
         -D $((HTAP_PERF_DELAY * 1000)) \
         -o "$perf_data" -- sleep $((HTAP_PERF_DURATION + HTAP_PERF_DELAY)) &

@@ -33,6 +33,10 @@ export PATH="/usr/local/percona-csd/bin:${PATH}"
 # QEMU VM does not expose the cpu_core PMU; use the generic cycles event
 export PERF_EVENT="cycles"
 
+# Custom-built perf from CEMU kernel sources lacks libdw, so --call-graph dwarf is broken.
+# mysqld is rebuilt with -fno-omit-frame-pointer, so fp unwinding works instead.
+export PERF_CALL_GRAPH="fp"
+
 # Override SSD checks to succeed immediately (no block device check needed)
 check_ssd_device()      { return 0; }
 check_ssd_mount()       { return 0; }
