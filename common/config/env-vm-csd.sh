@@ -30,11 +30,14 @@ export BENCH_SUDO=""
 # Percona CSD binaries (mysqladmin, mysql, etc.) are not in the default PATH
 export PATH="/usr/local/percona-csd/bin:${PATH}"
 
-# QEMU VM does not expose the cpu_core PMU; use the generic cycles event
-export PERF_EVENT="cycles"
+# Hardware PMU (cycles) teardown triggers jump_label_update SMP patching in the CEMU kernel,
+# which crashes under QEMU SMP load. task-clock is a software event with no hardware PMU
+# teardown path — avoids the panic while still providing CPU-time samples.
+export PERF_EVENT="task-clock"
 
 # Custom-built perf from CEMU kernel sources lacks libdw, so --call-graph dwarf is broken.
 # mysqld is rebuilt with -fno-omit-frame-pointer, so fp unwinding works instead.
+# task-clock + fp: no hardware PMU teardown, no jump_label crash.
 export PERF_CALL_GRAPH="fp"
 
 # Override SSD checks to succeed immediately (no block device check needed)
