@@ -79,7 +79,7 @@ RESULT_DIR="${2:-${RESULTS_DIR}/profiling/htap/${ENGINE}/$(date +%Y%m%d_%H%M%S)}
 drop_page_cache() {
     log_info "Dropping OS page cache..."
     sync
-    echo 3 | ${BENCH_SUDO-sudo} tee /proc/sys/vm/drop_caches > /dev/null
+    echo "${DROP_CACHES_LEVEL:-3}" | ${BENCH_SUDO-sudo} tee /proc/sys/vm/drop_caches > /dev/null
     log_info "Page cache dropped"
 }
 

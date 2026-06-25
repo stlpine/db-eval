@@ -111,6 +111,7 @@ export HTAP_QUERY_TIMEOUT="7200"         # Max seconds per analytical query (MyS
 export HTAP_PERF_DURATION="120"          # Seconds of actual recording per OLAP run (flamegraph sample window)
 export HTAP_PERF_DELAY="30"             # Seconds to delay before recording starts (skips query init/build phase)
 export PERF_CALL_GRAPH="dwarf"          # Call graph mode: dwarf (apt perf has libdw) for bare-metal; fp for VM
+export DROP_CACHES_LEVEL="3"            # 3=page+inode caches (bare-metal); 1=page cache only (VM: FDMFS inodes lost with 3)
 
 # ClickBench Configuration (OLAP)
 export CLICKBENCH_DATA_URL="https://datasets.clickhouse.com/hits_compatible/hits.tsv.gz"

@@ -41,6 +41,10 @@ export PERF_EVENT="cycles"
 # task-clock + fp: no hardware PMU teardown, no jump_label crash.
 export PERF_CALL_GRAPH="fp"
 
+# FDMFS inodes live only in the kernel VFS inode cache. drop_caches=3 evicts them,
+# making /mnt/fdm0/0..31 inaccessible for the rest of the run. Use 1 (page cache only).
+export DROP_CACHES_LEVEL="1"
+
 # Override SSD checks to succeed immediately (no block device check needed)
 check_ssd_device()      { return 0; }
 check_ssd_mount()       { return 0; }

@@ -42,6 +42,15 @@ log_info "=========================================="
 
 mkdir -p "${RESULTS_DIR}"
 
+# FDMFS pool setup — device memory is volatile; systemd auto-mounts FDMFS on boot
+# but skips file creation, so pool files must be (re)created after every reboot.
+if [[ ! -e /mnt/fdm0/0 ]]; then
+    log_info "FDMFS pool missing — creating pool files..."
+    for j in $(seq 0 31); do touch /mnt/fdm0/$j && fallocate -l 32m /mnt/fdm0/$j; done
+    for j in $(seq 0 31); do touch /mnt/fdm1/$j && fallocate -l 32m /mnt/fdm1/$j; done
+    log_info "FDMFS pool ready."
+fi
+
 # Phase 1: Data preparation
 if [ "$SKIP_PREPARE" = false ]; then
     log_info "Phase 1: Preparing sysbench-htap data..."
