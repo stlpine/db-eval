@@ -263,10 +263,11 @@ fi
 start_mysql_cold
 verify_storage_engine
 
-# For CSD engine: enable before OLTP starts so that SST table readers for the
-# csd_olap CF are opened via CemuTableFactory. Setting it later (after OLTP has
-# already touched the tables) leaves the readers cached as BlockBasedTableReader.
-if [ "$IS_CSD" = "true" ]; then
+# For CSD engine: honour ROCKSDB_CEMU_ENABLED (default ON).
+# CemuTableReader.NewIterator() checks rocksdb_cemu_enabled at iterator-creation
+# time, so this flag can be toggled at any point before queries run.
+# Set ROCKSDB_CEMU_ENABLED=false to run a no-CSD control with the CSD binary.
+if [ "$IS_CSD" = "true" ] && [ "${ROCKSDB_CEMU_ENABLED:-true}" != "false" ]; then
     mysql --socket="$SOCKET" \
         -e "SET GLOBAL rocksdb_cemu_enabled = ON;" 2>/dev/null || \
         log_error "  WARNING: failed to enable rocksdb_cemu_enabled"
@@ -672,7 +673,6 @@ SQL
 SET SESSION transaction_isolation='REPEATABLE-READ';
 SET SESSION rocksdb_perf_context_level=${PROFILING_PERF_CONTEXT_LEVEL};
 SET SESSION max_execution_time=$((HTAP_QUERY_TIMEOUT * 1000));
-SET GLOBAL rocksdb_cemu_enabled = ON;
 SET @htap_cutoff = ${CUTOFF};
 SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
 WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
@@ -791,10 +791,12 @@ SQL
     wait "$PERF_PID" 2>/dev/null || true
     PERF_PID=""
 
-    # Warn if query was very short (perf may not have attached in time)
+    # Warn if query was too short for perf to record meaningful data
     elapsed_int=$(echo "$elapsed" | awk '{printf "%d", $1}')
     if [ "${elapsed_int:-0}" -lt 2 ]; then
         log_error "  WARNING: query completed in <2s (${elapsed}s) — perf may not have attached in time"
+    elif [ "${elapsed_int:-0}" -lt "${HTAP_PERF_DELAY:-30}" ]; then
+        log_error "  WARNING: query completed in ${elapsed}s but PERF_DELAY=${HTAP_PERF_DELAY:-30}s — flamegraph will be empty (perf starts recording after query finishes)"
     fi
 
     # Extract metrics
