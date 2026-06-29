@@ -267,11 +267,20 @@ verify_storage_engine
 # CemuTableReader.NewIterator() checks rocksdb_cemu_enabled at iterator-creation
 # time, so this flag can be toggled at any point before queries run.
 # Set ROCKSDB_CEMU_ENABLED=false to run a no-CSD control with the CSD binary.
-if [ "$IS_CSD" = "true" ] && [ "${ROCKSDB_CEMU_ENABLED:-true}" != "false" ]; then
-    mysql --socket="$SOCKET" \
-        -e "SET GLOBAL rocksdb_cemu_enabled = ON;" 2>/dev/null || \
-        log_error "  WARNING: failed to enable rocksdb_cemu_enabled"
-    log_info "rocksdb_cemu_enabled set to ON"
+# NOTE: my-percona-myrocks-csd-vm.cnf starts mysqld with rocksdb_cemu_enabled=ON,
+# so we must actively SET GLOBAL OFF — not just skip the ON — when disabling.
+if [ "$IS_CSD" = "true" ]; then
+    if [ "${ROCKSDB_CEMU_ENABLED:-true}" != "false" ]; then
+        mysql --socket="$SOCKET" \
+            -e "SET GLOBAL rocksdb_cemu_enabled = ON;" 2>/dev/null || \
+            log_error "  WARNING: failed to enable rocksdb_cemu_enabled"
+        log_info "rocksdb_cemu_enabled set to ON"
+    else
+        mysql --socket="$SOCKET" \
+            -e "SET GLOBAL rocksdb_cemu_enabled = OFF;" 2>/dev/null || \
+            log_error "  WARNING: failed to disable rocksdb_cemu_enabled"
+        log_info "rocksdb_cemu_enabled set to OFF (no-CSD control run)"
+    fi
 fi
 
 capture_data_profile "$RESULT_DIR"
@@ -893,6 +902,14 @@ for RUN in $(seq 1 "$HTAP_OLAP_RUNS"); do
         log_error "  Run ${RUN}: perf data missing or empty, skipping flamegraph"
     fi
 done
+
+# Fix ownership: perf record runs as root (via sudo), so .data files are root-owned.
+# Chown the whole result dir back to the invoking user so VSCode/SCP can read the files.
+if [ -n "${SUDO_USER:-}" ]; then
+    sudo chown -R "${SUDO_USER}:${SUDO_USER}" "$RESULT_DIR" 2>/dev/null || true
+elif [ "$(id -u)" -ne 0 ]; then
+    sudo chown -R "$(id -un):$(id -gn)" "$RESULT_DIR" 2>/dev/null || true
+fi
 
 log_info "=========================================="
 log_info "HTAP profiling complete"
