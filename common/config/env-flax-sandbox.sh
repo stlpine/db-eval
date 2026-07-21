@@ -62,6 +62,12 @@ wait_for_mount_settle() { return 0; }
 # workload below is already scaled down, so memory pressure isn't a concern.
 export PERF_CALL_GRAPH="dwarf"
 
+# env.sh defaults PERF_EVENT to "cpu_core/cycles/" -- the hybrid P/E-core PMU
+# name specific to the bare-metal i7-13700K. This QEMU guest's virtual CPU
+# has no cpu_core PMU ("Cannot find PMU `cpu_core'"), same issue the CEMU
+# thread already hit and fixed the same way in env-vm-csd.sh.
+export PERF_EVENT="cycles"
+
 # --- Scaled-down HTAP workload parameters for this sandbox pass ---
 # Full scale is deferred to the eventual bare-metal s1 run, once this
 # harness is confirmed working here.
