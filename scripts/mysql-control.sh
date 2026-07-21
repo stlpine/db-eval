@@ -219,9 +219,14 @@ start_mysql() {
     # Wait for mount to settle if recently mounted
     wait_for_mount_settle
 
-    # Check if already running
-    if [ -f "$PID_FILE" ] && kill -0 $(cat "$PID_FILE") 2>/dev/null; then
-        log_error "MySQL is already running (PID: $(cat $PID_FILE))"
+    # Check if already running. cat's own stderr is redirected inline (not
+    # just relying on a trailing 2>/dev/null on the outer kill command) --
+    # bash evaluates command substitutions before applying the enclosing
+    # command's redirects, so a failing cat here (e.g. a root-owned,
+    # unreadable pid file left over from a prior run) would otherwise leak
+    # "Permission denied" to the terminal regardless.
+    if [ -f "$PID_FILE" ] && kill -0 $(cat "$PID_FILE" 2>/dev/null) 2>/dev/null; then
+        log_error "MySQL is already running (PID: $(cat "$PID_FILE" 2>/dev/null))"
         exit 1
     fi
 
@@ -270,6 +275,13 @@ start_mysql() {
                 [ -f "$PID_FILE" ] && break
                 sleep 1
             done
+            # mysqld may run as a different (e.g. root) user than whatever
+            # reads this pid file later (this script's own status/stop
+            # checks, profile-htap.sh's MYSQLD_PID read) -- make sure it's
+            # world-readable so those don't silently fail with "Permission
+            # denied" (confirmed 2026-07-21 on the FLAX sandbox, where mysqld
+            # runs as root but the invoking guest user does not).
+            [ -f "$PID_FILE" ] && ${BENCH_SUDO-sudo} chmod 644 "$PID_FILE" 2>/dev/null
             log_info "MySQL started successfully with $ENGINE engine"
             return 0
         fi
@@ -280,7 +292,7 @@ start_mysql() {
     log_error "Check error log: $ERROR_LOG"
     if [ -f "$ERROR_LOG" ]; then
         log_error "Last 20 lines of error log:"
-        tail -20 "$ERROR_LOG" >&2
+        ${BENCH_SUDO-sudo} tail -20 "$ERROR_LOG" >&2
     fi
     exit 1
 }
@@ -321,8 +333,8 @@ restart_mysql() {
 }
 
 status_mysql() {
-    if [ -f "$PID_FILE" ] && kill -0 $(cat "$PID_FILE") 2>/dev/null; then
-        log_info "MySQL is running with $ENGINE engine (PID: $(cat $PID_FILE))"
+    if [ -f "$PID_FILE" ] && kill -0 $(cat "$PID_FILE" 2>/dev/null) 2>/dev/null; then
+        log_info "MySQL is running with $ENGINE engine (PID: $(cat "$PID_FILE" 2>/dev/null))"
         mysqladmin --socket="$SOCKET" status 2>/dev/null || true
     else
         log_info "MySQL is not running"

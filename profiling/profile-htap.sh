@@ -101,7 +101,12 @@ start_mysql_cold() {
     # Truncate the device-offload debug log so each profiling run starts clean.
     # Without this, tail -N shows entries from previous sessions mixed with current.
     [ "$IS_CSD" = "true" ] && > /tmp/cemu_debug.log 2>/dev/null || true
-    [ "$IS_NVMEVIRT" = "true" ] && > /tmp/nvmevirt_debug.log 2>/dev/null || true
+    # sudo'd (tee, not a plain redirect): mysqld runs as root in the FLAX
+    # sandbox, so a leftover log from a prior run is root-owned -- a plain
+    # `> file` here would fail with "Permission denied" as the invoking
+    # non-root guest user, and bash evaluates that redirect before the
+    # trailing 2>/dev/null takes effect, so the error would leak regardless.
+    [ "$IS_NVMEVIRT" = "true" ] && { ${BENCH_SUDO-sudo} tee /tmp/nvmevirt_debug.log < /dev/null > /dev/null 2>&1 || true; }
     log_info "Starting MySQL (cold)..."
     "${SCRIPT_DIR}/../scripts/mysql-control.sh" "$ENGINE" start
     sleep 5
