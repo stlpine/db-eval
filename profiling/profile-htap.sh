@@ -21,7 +21,7 @@
 #
 #   cutoff      k <= cutoff value (default: $HTAP_JOIN_CUTOFF from env.sh)
 #   result_dir  Output dir (default: results/profiling/htap/<engine>/<timestamp>)
-#   engine      percona-myrocks | percona-innodb | percona-myrocks-csd (default: percona-myrocks)
+#   engine      percona-myrocks | percona-innodb | percona-myrocks-csd | percona-myrocks-nvmevirt (default: percona-myrocks)
 #
 # Prerequisites:
 #   - sysbench-htap data loaded: prepare-data.sh -e <engine> -b sysbench-htap
@@ -53,24 +53,36 @@ case "$ENGINE" in
         PID_FILE="${MYSQL_PID_PERCONA_MYROCKS_CSD}"
         EXPECTED_ENGINE="ROCKSDB"
         ;;
+    percona-myrocks-nvmevirt)
+        SOCKET="${MYSQL_SOCKET_PERCONA_MYROCKS_NVMEVIRT}"
+        PID_FILE="${MYSQL_PID_PERCONA_MYROCKS_NVMEVIRT}"
+        EXPECTED_ENGINE="ROCKSDB"
+        ;;
     percona-innodb)
         SOCKET="${MYSQL_SOCKET_PERCONA_INNODB}"
         PID_FILE="${MYSQL_PID_PERCONA_INNODB}"
         EXPECTED_ENGINE="InnoDB"
         ;;
     *)
-        echo "Unknown engine: $ENGINE (use percona-myrocks, percona-myrocks-csd, or percona-innodb)" >&2
+        echo "Unknown engine: $ENGINE (use percona-myrocks, percona-myrocks-csd, percona-myrocks-nvmevirt, or percona-innodb)" >&2
         exit 1
         ;;
 esac
 
-# Helper: true for both MyRocks variants (share all RocksDB perf-context logic)
+# Helper: true for all MyRocks variants (share all RocksDB perf-context logic)
 IS_MYROCKS=false
 IS_CSD=false
-if [ "$ENGINE" = "percona-myrocks" ] || [ "$ENGINE" = "percona-myrocks-csd" ]; then
+IS_NVMEVIRT=false
+if [ "$ENGINE" = "percona-myrocks" ] || [ "$ENGINE" = "percona-myrocks-csd" ] || [ "$ENGINE" = "percona-myrocks-nvmevirt" ]; then
     IS_MYROCKS=true
 fi
 [ "$ENGINE" = "percona-myrocks-csd" ] && IS_CSD=true
+[ "$ENGINE" = "percona-myrocks-nvmevirt" ] && IS_NVMEVIRT=true
+# Structural flag shared by both device-offload engines: their SQL blocks
+# insert an extra global-status snapshot before/after the join, which shifts
+# how ctx_after must be anchored (see the TABLE_SCHEMA-counting parse below).
+IS_DEVICE_OFFLOAD=false
+[ "$IS_CSD" = "true" ] || [ "$IS_NVMEVIRT" = "true" ] && IS_DEVICE_OFFLOAD=true
 
 RESULT_DIR="${2:-${RESULTS_DIR}/profiling/htap/${ENGINE}/$(date +%Y%m%d_%H%M%S)}"
 
@@ -86,9 +98,10 @@ drop_page_cache() {
 start_mysql_cold() {
     ensure_mysql_stopped "$ENGINE"
     drop_page_cache
-    # Truncate the CEMU debug log so each profiling run starts clean.
+    # Truncate the device-offload debug log so each profiling run starts clean.
     # Without this, tail -N shows entries from previous sessions mixed with current.
     [ "$IS_CSD" = "true" ] && > /tmp/cemu_debug.log 2>/dev/null || true
+    [ "$IS_NVMEVIRT" = "true" ] && > /tmp/nvmevirt_debug.log 2>/dev/null || true
     log_info "Starting MySQL (cold)..."
     "${SCRIPT_DIR}/../scripts/mysql-control.sh" "$ENGINE" start
     sleep 5
@@ -245,6 +258,12 @@ if [ "$ENGINE" = "percona-myrocks" ]; then
 elif [ "$ENGINE" = "percona-myrocks-csd" ]; then
     echo "run,elapsed_s,cutoff,rows_scanned,internal_key_skipped_count_delta,internal_delete_skipped_count_delta,get_snapshot_time_ns_delta,block_read_count_delta,block_read_byte_delta,block_read_time_ns_delta,get_from_memtable_count_delta,get_from_output_files_time_ns_delta,csd_keys_seen,csd_keys_filtered,csd_freeze_ns" \
         > "${RESULT_DIR}/htap_olap_runs.csv"
+elif [ "$ENGINE" = "percona-myrocks-nvmevirt" ]; then
+    # No freeze_ns column -- FLAX's v1 offload only blocks the calling mysqld
+    # thread on its own SST read, not the whole guest, so there's no
+    # equivalent counter to report.
+    echo "run,elapsed_s,cutoff,rows_scanned,internal_key_skipped_count_delta,internal_delete_skipped_count_delta,get_snapshot_time_ns_delta,block_read_count_delta,block_read_byte_delta,block_read_time_ns_delta,get_from_memtable_count_delta,get_from_output_files_time_ns_delta,nvmevirt_keys_seen,nvmevirt_keys_filtered" \
+        > "${RESULT_DIR}/htap_olap_runs.csv"
 else
     echo "run,elapsed_s,cutoff,rows_scanned,handler_read_key,innodb_rows_read_delta,innodb_buffer_pool_reads_delta,innodb_buffer_pool_read_requests_delta,innodb_pages_read_delta,innodb_data_reads_delta,innodb_data_read_bytes_delta" \
         > "${RESULT_DIR}/htap_olap_runs.csv"
@@ -280,6 +299,26 @@ if [ "$IS_CSD" = "true" ]; then
             -e "SET GLOBAL rocksdb_cemu_enabled = OFF;" 2>/dev/null || \
             log_error "  WARNING: failed to disable rocksdb_cemu_enabled"
         log_info "rocksdb_cemu_enabled set to OFF (no-CSD control run)"
+    fi
+fi
+
+# For the NVMeVirt engine: rocksdb_nvmevirt_enabled is checked in
+# NvmeVirtTableReader::NewIterator() at iterator-creation time
+# (per-query), so it's safe to toggle at any point before queries run.
+# Set ROCKSDB_NVMEVIRT_ENABLED=false to run a no-offload control with the same
+# binary/data (my-percona-myrocks-nvmevirt-sandbox.cnf starts with it ON, so we
+# must actively SET GLOBAL OFF -- not just skip the ON -- when disabling).
+if [ "$IS_NVMEVIRT" = "true" ]; then
+    if [ "${ROCKSDB_NVMEVIRT_ENABLED:-true}" != "false" ]; then
+        mysql --socket="$SOCKET" \
+            -e "SET GLOBAL rocksdb_nvmevirt_enabled = ON;" 2>/dev/null || \
+            log_error "  WARNING: failed to enable rocksdb_nvmevirt_enabled"
+        log_info "rocksdb_nvmevirt_enabled set to ON"
+    else
+        mysql --socket="$SOCKET" \
+            -e "SET GLOBAL rocksdb_nvmevirt_enabled = OFF;" 2>/dev/null || \
+            log_error "  WARNING: failed to disable rocksdb_nvmevirt_enabled"
+        log_info "rocksdb_nvmevirt_enabled set to OFF (no-offload control run)"
     fi
 fi
 
@@ -398,6 +437,7 @@ CONFIG_LOG="${RESULT_DIR}/profiling_config.log"
     echo "NOTE: RocksDB perf context captured PER-SESSION inside OLAP heredoc (CTX_SPLIT/TABLE_SCHEMA anchors) — NOT from external monitor"
     echo "NOTE: CSD engine ctx_after parsed via second TABLE_SCHEMA header (QUERY_DONE not emitted by MySQL 8.4 batch mode)"
     echo "NOTE: CEMU counters (rocksdb_cemu_keys_seen/filtered) are global atomics; deltas computed from head-2/tail-2 of SHOW GLOBAL STATUS output"
+    echo "NOTE: NVMeVirt counters (rocksdb_nvmevirt_keys_seen/filtered) are global atomics; no freeze_ns equivalent -- FLAX's v1 offload blocks only the calling thread, not the whole guest"
     echo "NOTE: Version growth loop uses probe scan (sbtest1 k<=1000) to measure per-probe internal_key_skipped_count growth; awk detects STAT_TYPE header by content (not NR==1) to handle multi-result-set --batch output"
     echo ""
     echo "============================================================"
@@ -702,6 +742,32 @@ SHOW SESSION STATUS LIKE 'Handler_read_next';
 SHOW SESSION STATUS LIKE 'Handler_read_rnd_next';
 SQL
         )
+    elif [ "$ENGINE" = "percona-myrocks-nvmevirt" ]; then
+        # Same layout as the CSD branch above, minus the freeze counter (no
+        # VM-wide freeze in FLAX's v1 offload -- see IS_DEVICE_OFFLOAD note).
+        raw_output=$(mysql --socket="$SOCKET" "$BENCHMARK_DB" \
+            --batch --force 2>/dev/null <<SQL
+SET SESSION transaction_isolation='REPEATABLE-READ';
+SET SESSION rocksdb_perf_context_level=${PROFILING_PERF_CONTEXT_LEVEL};
+SET SESSION max_execution_time=$((HTAP_QUERY_TIMEOUT * 1000));
+SET @htap_cutoff = ${CUTOFF};
+SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
+WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
+  AND TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4');
+SELECT 'CTX_SPLIT' AS ctx_marker;
+SHOW GLOBAL STATUS LIKE 'Rocksdb_nvmevirt_keys%';
+SELECT 'CSD_SPLIT' AS csd_marker;
+FLUSH STATUS;
+${JOIN4_CONTENT}
+SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
+WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
+  AND TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4');
+SHOW GLOBAL STATUS LIKE 'Rocksdb_nvmevirt_keys%';
+SHOW SESSION STATUS LIKE 'Handler_read_first';
+SHOW SESSION STATUS LIKE 'Handler_read_next';
+SHOW SESSION STATUS LIKE 'Handler_read_rnd_next';
+SQL
+        )
     else
         raw_output=$(mysql --socket="$SOCKET" "$BENCHMARK_DB" \
             --batch --skip-column-names --force 2>/dev/null <<SQL
@@ -730,21 +796,23 @@ SQL
     csd_seen_delta=0
     csd_filt_delta=0
     csd_freeze_delta=0
+    nv_seen_delta=0
+    nv_filt_delta=0
     if [ "$IS_MYROCKS" = "true" ]; then
         ctx_before=$(echo "$raw_output" | awk '/^CTX_SPLIT/{exit} {print}')
         ctx_after=$(echo  "$raw_output" | awk 'f && /^Handler_/{exit} f{print} /^CTX_SPLIT/{f=1}')
     fi
 
-    # For the CSD engine: override ctx_after using the second TABLE_SCHEMA header as
-    # anchor.  The CSD SQL layout is:
-    #   ctx_before (TABLE_SCHEMA) | CTX_SPLIT | csd_before | CSD_SPLIT |
-    #   join query | ctx_after (TABLE_SCHEMA) | csd_after (Variable_name) | Handler_*
+    # For either device-offload engine (CSD or NVMeVirt): override ctx_after
+    # using the second TABLE_SCHEMA header as anchor. Both engines' SQL layout is:
+    #   ctx_before (TABLE_SCHEMA) | CTX_SPLIT | device_counters_before | CSD_SPLIT |
+    #   join query | ctx_after (TABLE_SCHEMA) | device_counters_after (Variable_name) | Handler_*
     #
     # MySQL 8.4 batch mode does not emit the join query's result row in the captured
     # output, so QUERY_DONE (removed) cannot serve as a reliable sentinel.  The second
     # TABLE_SCHEMA line is the ctx_after ROCKSDB_PERF_CONTEXT header; we stop at the
-    # first Variable_name that follows it (the csd_after SHOW GLOBAL STATUS block).
-    if [ "$IS_CSD" = "true" ]; then
+    # first Variable_name that follows it (the device_counters_after SHOW GLOBAL STATUS block).
+    if [ "$IS_DEVICE_OFFLOAD" = "true" ]; then
         ctx_after=$(echo "$raw_output" | awk '/^TABLE_SCHEMA/{if(++c==2)f=1} f&&/^Variable_name/{exit} f{print}')
     fi
 
@@ -770,6 +838,25 @@ SQL
         csd_freeze_before=$(_csd_val "$csd_freeze_raw_before" "Rocksdb_cemu_freeze_ns")
         csd_freeze_after=$( _csd_val "$csd_freeze_raw_after"  "Rocksdb_cemu_freeze_ns")
         csd_freeze_delta=$(awk "BEGIN{printf \"%.0f\n\", ${csd_freeze_after:-0} - ${csd_freeze_before:-0}}")
+    fi
+
+    # For the NVMeVirt engine: parse global counter deltas the same way as
+    # CSD above (SHOW GLOBAL STATUS LIKE 'Rocksdb_nvmevirt_keys%' runs twice,
+    # before and after the join -- head -2/tail -2 gives before/after). No
+    # freeze counter to parse.
+    if [ "$IS_NVMEVIRT" = "true" ]; then
+        nv_raw_before=$(echo "$raw_output" | grep -i "rocksdb_nvmevirt_keys" | head -2)
+        nv_raw_after=$( echo "$raw_output" | grep -i "rocksdb_nvmevirt_keys" | tail -2)
+        _nv_val() {
+            local section=$1 key=$2
+            echo "$section" | awk -v k="$key" 'toupper($1)==toupper(k){print $2+0; exit}'
+        }
+        nv_seen_before=$(_nv_val "$nv_raw_before" "Rocksdb_nvmevirt_keys_seen")
+        nv_filt_before=$(_nv_val "$nv_raw_before" "Rocksdb_nvmevirt_keys_filtered")
+        nv_seen_after=$( _nv_val "$nv_raw_after"  "Rocksdb_nvmevirt_keys_seen")
+        nv_filt_after=$( _nv_val "$nv_raw_after"  "Rocksdb_nvmevirt_keys_filtered")
+        nv_seen_delta=$(awk "BEGIN{printf \"%.0f\n\", ${nv_seen_after:-0} - ${nv_seen_before:-0}}")
+        nv_filt_delta=$(awk "BEGIN{printf \"%.0f\n\", ${nv_filt_after:-0} - ${nv_filt_before:-0}}")
     fi
 
     # Save raw output; append parsed before/after for human inspection
@@ -845,6 +932,13 @@ SQL
                 "$RUN" "$elapsed" "$rows_scanned" "${iksc_delta:-0}" \
                 "${csd_filt_delta:-0}" "${csd_seen_delta:-0}" "$csd_ratio" "${csd_freeze_delta:-0}" "$llt_alive"
             echo "${RUN},${elapsed},${CUTOFF},${rows_scanned},${iksc_delta:-0},${idsc_delta:-0},${gst_delta:-0},${brc_delta:-0},${brb_delta:-0},${brt_delta:-0},${gfmc_delta:-0},${gfoft_delta:-0},${csd_seen_delta:-0},${csd_filt_delta:-0},${csd_freeze_delta:-0}" \
+                >> "${RESULT_DIR}/htap_olap_runs.csv"
+        elif [ "$IS_NVMEVIRT" = "true" ]; then
+            nv_ratio=$(awk "BEGIN{s=${nv_seen_delta:-0}; if(s>0) printf \"%.3f\", ${nv_filt_delta:-0}/s; else print \"N/A\"}")
+            printf "  run=%d elapsed=%.1fs | rows_scanned=%s | key_skipped=%s | nvmevirt_filtered=%s/%s (ratio=%s) | llt_alive=%d\n" \
+                "$RUN" "$elapsed" "$rows_scanned" "${iksc_delta:-0}" \
+                "${nv_filt_delta:-0}" "${nv_seen_delta:-0}" "$nv_ratio" "$llt_alive"
+            echo "${RUN},${elapsed},${CUTOFF},${rows_scanned},${iksc_delta:-0},${idsc_delta:-0},${gst_delta:-0},${brc_delta:-0},${brb_delta:-0},${brt_delta:-0},${gfmc_delta:-0},${gfoft_delta:-0},${nv_seen_delta:-0},${nv_filt_delta:-0}" \
                 >> "${RESULT_DIR}/htap_olap_runs.csv"
         else
             printf "  run=%d elapsed=%.1fs | rows_scanned=%s | key_skipped=%s | block_reads=%s | llt_alive=%d\n" \

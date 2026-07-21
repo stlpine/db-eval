@@ -13,6 +13,7 @@ Engine:
     percona-innodb         - Percona Server 8.4 with InnoDB
     percona-myrocks        - Percona Server 8.4 with MyRocks (RocksDB)
     percona-myrocks-csd    - Percona Server 8.4 with MyRocks + CSD sim (/usr/local/percona-csd)
+    percona-myrocks-nvmevirt - Percona Server 8.4 with MyRocks + FLAX/NVMeVirt offload (sandbox build tree)
 
 Action:
     start       - Start MySQL server
@@ -105,6 +106,15 @@ case $ENGINE in
         MYSQLD_BIN="/usr/local/percona-csd/bin/mysqld"
         CONFIG_FILE="${MYSQL_CSD_CONFIG_OVERRIDE:-${SCRIPT_DIR}/../common/config/my-percona-myrocks-csd.cnf}"
         ;;
+    percona-myrocks-nvmevirt)
+        DATADIR="${MYSQL_DATADIR_PERCONA_MYROCKS_NVMEVIRT}"
+        SOCKET="${MYSQL_SOCKET_PERCONA_MYROCKS_NVMEVIRT}"
+        PID_FILE="${MYSQL_PID_PERCONA_MYROCKS_NVMEVIRT}"
+        # Raw build tree, not an installed prefix -- see
+        # my-percona-myrocks-nvmevirt-sandbox.cnf's header comment.
+        MYSQLD_BIN="${FLAX_PS_BUILD_DIR:?FLAX_PS_BUILD_DIR not set -- source env-flax-sandbox.sh via FLAX_SANDBOX_ENV}/runtime_output_directory/mysqld"
+        CONFIG_FILE="${MYSQL_NVMEVIRT_CONFIG_OVERRIDE:-${SCRIPT_DIR}/../common/config/my-percona-myrocks-nvmevirt-sandbox.cnf}"
+        ;;
     *)
         log_error "Unknown engine: $ENGINE"
         usage
@@ -130,6 +140,21 @@ if [ "$ENGINE" = "percona-myrocks" ]; then
     fi
     # Append bloom filter setting to rocksdb_default_cf_options line
     sed -i "s/^\(rocksdb_default_cf_options.*\)$/\1${BLOOM_SETTING}/" "$RUNTIME_CONFIG"
+fi
+
+# For the FLAX/NVMeVirt sandbox: substitute placeholder tokens with the
+# actual build/data paths from env-flax-sandbox.sh. The .cnf itself stays
+# host-independent (the guest's home directory/build layout isn't fixed
+# across sandbox rebuilds) -- same rationale as the bloom filter injection
+# above, just for paths instead of a config value.
+if [ "$ENGINE" = "percona-myrocks-nvmevirt" ]; then
+    sed -i \
+        -e "s#__BASEDIR__#${FLAX_PS_BUILD_DIR}#g" \
+        -e "s#__PLUGIN_DIR__#${FLAX_PS_BUILD_DIR}/plugin_output_directory#g" \
+        -e "s#__DATADIR__#${DATADIR}#g" \
+        -e "s#__SOCKET__#${SOCKET}#g" \
+        -e "s#__PID_FILE__#${PID_FILE}#g" \
+        "$RUNTIME_CONFIG"
 fi
 
 CONFIG_FILE="$RUNTIME_CONFIG"
@@ -159,7 +184,7 @@ init_mysql() {
     # For MyRocks: create a temp config without RocksDB-specific options
     # because --initialize can't use RocksDB (system tables need InnoDB, plugins not loaded yet)
     INIT_CONFIG="$CONFIG_FILE"
-    if [ "$ENGINE" = "percona-myrocks" ] || [ "$ENGINE" = "percona-myrocks-csd" ]; then
+    if [ "$ENGINE" = "percona-myrocks" ] || [ "$ENGINE" = "percona-myrocks-csd" ] || [ "$ENGINE" = "percona-myrocks-nvmevirt" ]; then
         INIT_CONFIG="/tmp/my-${ENGINE}-init.cnf"
         grep -v -E "^default-storage-engine|^plugin-load|^rocksdb|^basedir" "$CONFIG_FILE" > "$INIT_CONFIG"
         # Inject the correct basedir so --initialize finds the right install prefix
@@ -167,9 +192,12 @@ init_mysql() {
         chmod 644 "$INIT_CONFIG"
     fi
 
-    # Initialize MySQL
+    # Initialize MySQL. --user must match MYSQL_DAEMON_USER (not hardcoded
+    # "mysql") -- the FLAX sandbox runs mysqld as root (device-node access
+    # requires it), and mysqld refuses to start as root without this
+    # explicit acknowledgment.
     log_info "Running mysqld --initialize-insecure..."
-    ${BENCH_SUDO-sudo} "$MYSQLD_BIN" --defaults-file="$INIT_CONFIG" --datadir="$DATADIR" --initialize-insecure --user=mysql || {
+    ${BENCH_SUDO-sudo} "$MYSQLD_BIN" --defaults-file="$INIT_CONFIG" --datadir="$DATADIR" --initialize-insecure --user="${MYSQL_DAEMON_USER:-mysql}" || {
         log_error "MySQL initialization failed"
         exit 1
     }
@@ -216,7 +244,16 @@ start_mysql() {
     # incompatible with this VM environment (process is immediately SIGKILL'd).
     # The pid file wait loop below handles the race between socket readiness
     # and pid file creation.
-    ${BENCH_SUDO-sudo} "$MYSQLD_BIN" --defaults-file="$CONFIG_FILE" --user="${MYSQL_DAEMON_USER:-mysql}" --log-error="$ERROR_LOG" > /dev/null 2>&1 &
+    if [ "$ENGINE" = "percona-myrocks-nvmevirt" ]; then
+        # csdvirt_load_files resolves relative SST paths (e.g.
+        # "./.rocksdb/000031.sst") against mysqld's process CWD, not its
+        # datadir -- RocksDB's own I/O tracks an absolute db_path internally
+        # and doesn't care, but FLAX's own file I/O does. Confirmed 2026-07-17
+        # via nvmevirt_debug.log showing 0 bytes loaded for a relative path.
+        (cd "$DATADIR" && ${BENCH_SUDO-sudo} "$MYSQLD_BIN" --defaults-file="$CONFIG_FILE" --user="${MYSQL_DAEMON_USER:-mysql}" --log-error="$ERROR_LOG" > /dev/null 2>&1) &
+    else
+        ${BENCH_SUDO-sudo} "$MYSQLD_BIN" --defaults-file="$CONFIG_FILE" --user="${MYSQL_DAEMON_USER:-mysql}" --log-error="$ERROR_LOG" > /dev/null 2>&1 &
+    fi
 
     # Wait for MySQL to start (MyRocks may take longer)
     log_info "Waiting for MySQL to start..."

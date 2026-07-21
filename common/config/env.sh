@@ -65,6 +65,13 @@ export MYSQL_DATADIR_PERCONA_MYROCKS_CSD="${SSD_MOUNT}/mysql-percona-myrocks-csd
 export MYSQL_SOCKET_PERCONA_MYROCKS_CSD="/tmp/mysql_percona_myrocks_csd.sock"
 export MYSQL_PID_PERCONA_MYROCKS_CSD="/tmp/mysql_percona_myrocks_csd.pid"
 
+# FLAX/NVMeVirt offload engine (percona-myrocks-nvmevirt). Bare-metal defaults;
+# the sandbox (env-flax-sandbox.sh, sourced via FLAX_SANDBOX_ENV below)
+# overrides all three.
+export MYSQL_DATADIR_PERCONA_MYROCKS_NVMEVIRT="${SSD_MOUNT}/mysql-percona-myrocks-nvmevirt/data"
+export MYSQL_SOCKET_PERCONA_MYROCKS_NVMEVIRT="/tmp/mysql_percona_myrocks_nvmevirt.sock"
+export MYSQL_PID_PERCONA_MYROCKS_NVMEVIRT="/tmp/mysql_percona_myrocks_nvmevirt.pid"
+
 # Benchmark Configuration
 export BENCHMARK_DB="benchmarkdb"
 export BENCHMARK_THREADS="1 4 16 32"
@@ -317,4 +324,11 @@ ensure_mysql_stopped() {
 # (export it so all subprocess scripts that source env.sh also pick it up).
 if [ -n "${CEMU_VM_ENV:-}" ] && [ -f "${CEMU_VM_ENV}" ]; then
     source "${CEMU_VM_ENV}"
+fi
+
+# Same mechanism as CEMU_VM_ENV above, for the FLAX/NVMeVirt QEMU sandbox guest
+# (separate research thread, separate server -- see snu-csl/CLAUDE.md).
+# Set FLAX_SANDBOX_ENV to env-flax-sandbox.sh's absolute path before sourcing.
+if [ -n "${FLAX_SANDBOX_ENV:-}" ] && [ -f "${FLAX_SANDBOX_ENV}" ]; then
+    source "${FLAX_SANDBOX_ENV}"
 fi

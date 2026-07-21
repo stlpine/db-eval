@@ -39,6 +39,10 @@ case $ENGINE in
         SOCKET="${MYSQL_SOCKET_PERCONA_MYROCKS_CSD}"
         STORAGE_ENGINE="rocksdb"
         ;;
+    percona-myrocks-nvmevirt)
+        SOCKET="${MYSQL_SOCKET_PERCONA_MYROCKS_NVMEVIRT}"
+        STORAGE_ENGINE="rocksdb"
+        ;;
     *)
         log_error "Unknown engine: $ENGINE"
         usage
@@ -109,25 +113,29 @@ mysql --socket="$SOCKET" "$BENCHMARK_DB" -e "
     GROUP BY table_schema;
 "
 
-# For CSD sim: move OLAP tables (sbtest1–4, the join query targets) to the 'csd_olap'
-# column family. sbtest5–12 stay in 'default' CF and are used only by the OLTP
-# background load — the CSD filter does not need to cover them.
+# For CSD sim / FLAX NVMeVirt: move OLAP tables (sbtest1–4, the join query targets)
+# to the device's offload-covered column family. sbtest5–12 stay in 'default' CF
+# and are used only by the OLTP background load — the offload filter does not
+# need to cover them.
 #
 # MyRocks CF assignment is controlled by the KEY-level COMMENT, not the table-level
 # COMMENT. The correct approach is to drop and recreate the PRIMARY KEY with
-# COMMENT 'cfname=csd_olap'. ALTER TABLE ... ENGINE=ROCKSDB COMMENT='cfname=...'
+# COMMENT 'cfname=...'. ALTER TABLE ... ENGINE=ROCKSDB COMMENT='cfname=...'
 # sets the table comment only (ignored by MyRocks for CF assignment) and does NOT
 # move the table to a different CF.
-if [ "$ENGINE" = "percona-myrocks-csd" ]; then
-    log_info "Migrating OLAP tables (sbtest1–4) to csd_olap CF for CSD filter coverage..."
+CF_NAME=""
+[ "$ENGINE" = "percona-myrocks-csd" ] && CF_NAME="csd_olap"
+[ "$ENGINE" = "percona-myrocks-nvmevirt" ] && CF_NAME="nvmevirt_olap"
+if [ -n "$CF_NAME" ]; then
+    log_info "Migrating OLAP tables (sbtest1–4) to ${CF_NAME} CF for offload coverage..."
     for N in 1 2 3 4; do
-        log_info "  Rebuilding PRIMARY KEY for sbtest${N} with cfname=csd_olap ..."
+        log_info "  Rebuilding PRIMARY KEY for sbtest${N} with cfname=${CF_NAME} ..."
         mysql --socket="$SOCKET" "$BENCHMARK_DB" \
             -e "ALTER TABLE sbtest${N} DROP PRIMARY KEY,
-                    ADD PRIMARY KEY (id) COMMENT 'cfname=csd_olap';" || \
+                    ADD PRIMARY KEY (id) COMMENT 'cfname=${CF_NAME}';" || \
             log_error "  WARNING: CF migration failed for sbtest${N} (non-fatal)"
     done
-    log_info "CF migration complete — sbtest1–4 are now in csd_olap CF"
+    log_info "CF migration complete — sbtest1–4 are now in ${CF_NAME} CF"
     # Verify via RocksDB DDL
     mysql --socket="$SOCKET" \
         -e "SELECT TABLE_NAME, INDEX_NAME, CF

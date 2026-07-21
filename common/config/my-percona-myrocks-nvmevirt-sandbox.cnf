@@ -1,0 +1,67 @@
+[mysqld]
+# Percona Server 8.4 with MyRocks -- FLAX/NVMeVirt offload (QEMU sandbox variant)
+#
+# This is a raw BUILD TREE (percona-server/build), not an installed prefix --
+# basedir/plugin_dir point directly into it, same pattern as
+# guest-phase6-verify.sh's generated my.cnf. __BASEDIR__/__PLUGIN_DIR__/
+# __DATADIR__/__SOCKET__/__PID_FILE__ are substituted by mysql-control.sh at
+# runtime from FLAX_PS_BUILD_DIR / MYSQL_DATADIR_PERCONA_MYROCKS_NVMEVIRT /
+# MYSQL_SOCKET_PERCONA_MYROCKS_NVMEVIRT / MYSQL_PID_PERCONA_MYROCKS_NVMEVIRT
+# (env-flax-sandbox.sh) -- not hardcoded here, since the guest's actual home
+# directory/username isn't fixed across sandbox rebuilds.
+user = root
+port = 13307
+socket = __SOCKET__
+pid-file = __PID_FILE__
+datadir = __DATADIR__
+basedir = __BASEDIR__
+plugin_dir = __PLUGIN_DIR__
+
+# Storage Engine
+default-storage-engine = ROCKSDB
+
+# Load RocksDB Plugin
+plugin-load-add = ha_rocksdb.so
+
+# Transaction and Collation Settings (recommended for MyRocks)
+transaction-isolation = READ-COMMITTED
+character-set-server = latin1
+collation-server = latin1_bin
+
+# NVMeVirt MVCC filter offload -- must match the persisted NvmeVirtTableFactory
+# in existing data (rocksdb_nvmevirt_enabled is checked at NewIterator time,
+# not table-reader creation, so it's also safe to toggle per-run via SET GLOBAL).
+rocksdb_nvmevirt_enabled = ON
+rocksdb_cache_index_and_filter_blocks = false
+
+# Same compression/filter settings as guest-phase6-verify.sh's my.cnf, so this
+# profiling config and the correctness test stay comparable. Also matches
+# rdb_cf_options.cc's own compression=kNoCompression override for
+# nvmevirt_-prefixed CFs (belt and suspenders -- that override does not
+# reliably take effect at flush time, confirmed 2026-07-17 root-causing a
+# real LZ4-compressed block on disk despite it).
+# 32MB file-size cap keeps every SST within kNvmeVirtMaxSstBytes so the offload
+# path covers all of them; must be in effect before data prep runs.
+rocksdb_default_cf_options = compression=kNoCompression;block_based_table_factory={filter_policy=bloomfilter:10:false;whole_key_filtering=1};target_file_size_base=33554432;write_buffer_size=33554432
+rocksdb_allow_concurrent_memtable_write = ON
+rocksdb_max_open_files = -1
+
+# Enable perf context counters (level 1 = count only, minimal overhead;
+# profile-htap.sh bumps this to PROFILING_PERF_CONTEXT_LEVEL for actual runs)
+rocksdb_perf_context_level = 1
+
+# Binary log (ROW format for realistic production settings)
+binlog_format = ROW
+
+# Disable query logging for benchmarking
+slow_query_log = 0
+general_log = 0
+
+# Disable Performance Schema
+performance_schema = OFF
+
+# Enable LOAD DATA LOCAL INFILE for bulk loading
+local_infile = 1
+
+[client]
+socket = __SOCKET__
