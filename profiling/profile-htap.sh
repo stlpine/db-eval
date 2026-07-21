@@ -454,14 +454,19 @@ CONFIG_LOG="${RESULT_DIR}/profiling_config.log"
 log_info "Configuration logged to: $CONFIG_LOG"
 
 MYSQLD_PID=$(cat "${PID_FILE}" 2>/dev/null || true)
-if [ -z "$MYSQLD_PID" ] || ! kill -0 "$MYSQLD_PID" 2>/dev/null; then
+# sudo'd: mysqld may run as root (e.g. the FLAX sandbox, MYSQL_DAEMON_USER=root
+# -- csdvirt_init_dev() needs root for device-node access) while this script
+# runs as a non-root user, which can't kill -0 a root-owned PID (EPERM) even
+# though the process is alive -- confirmed 2026-07-21 via mysqld successfully
+# answering SHOW VARIABLES just before this check falsely reported it dead.
+if [ -z "$MYSQLD_PID" ] || ! ${BENCH_SUDO-sudo} kill -0 "$MYSQLD_PID" 2>/dev/null; then
     log_error "Cannot find mysqld PID"
     exit 1
 fi
 log_info "mysqld PID: $MYSQLD_PID"
 
 check_mysqld_alive() {
-    kill -0 "$MYSQLD_PID" 2>/dev/null || return 1
+    ${BENCH_SUDO-sudo} kill -0 "$MYSQLD_PID" 2>/dev/null || return 1
     mysql --socket="$SOCKET" --batch --skip-column-names --connect-timeout=5 \
         -e "SELECT 1;" 2>/dev/null | grep -q "^1$"
 }
