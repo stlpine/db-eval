@@ -64,22 +64,18 @@ export PERF_CALL_GRAPH="dwarf"
 
 # --- Scaled-down HTAP workload parameters for this sandbox pass ---
 # Full scale is deferred to the eventual bare-metal s1 run, once this
-# harness is confirmed working here. Each uses a := default so a value
-# already set in the environment (e.g. `HTAP_OLTP_THREADS=1 bash
-# run-flax-sandbox-htap.sh`) overrides it, instead of being clobbered --
-# useful for one-off diagnostic runs at a different concurrency without
-# editing this file.
-export HTAP_TABLES="${HTAP_TABLES:-12}"                          # keep -- join4.sql needs this exact shape
-export HTAP_TABLE_SIZE="${HTAP_TABLE_SIZE:-10000}"                # scaled down for the sandbox's vCPU/memory budget
-export HTAP_OLTP_THREADS="${HTAP_OLTP_THREADS:-8}"                # matches node0's vCPU budget (node1 is NVMeVirt's own threads)
-export HTAP_LLT_COUNT="${HTAP_LLT_COUNT:-2}"                      # lighter version-accumulation pressure for a first pass
-export HTAP_WARMUP_DURATION="${HTAP_WARMUP_DURATION:-30}"
-export HTAP_DURATION="${HTAP_DURATION:-300}"                      # informational only (not load-bearing in profile-htap.sh)
-export HTAP_CTX_INTERVAL="${HTAP_CTX_INTERVAL:-30}"
-export HTAP_OLAP_RUNS="${HTAP_OLAP_RUNS:-3}"                      # fewer runs -- naive per-SST blocking offload untested at this concurrency
-export HTAP_JOIN_CUTOFF="${HTAP_JOIN_CUTOFF:-9000}"               # ~90% selectivity, scaled proportionally to HTAP_TABLE_SIZE
-export HTAP_SELECTIVITY_CUTOFFS="${HTAP_SELECTIVITY_CUTOFFS:-100 1000 3000 6000 9000}"
-export HTAP_QUERY_TIMEOUT="${HTAP_QUERY_TIMEOUT:-3600}"           # generous -- naive offload's per-SST latency is unknown/possibly slow
+# harness is confirmed working here.
+export HTAP_TABLES="12"                          # keep -- join4.sql needs this exact shape
+export HTAP_TABLE_SIZE="10000"                   # scaled down for the sandbox's vCPU/memory budget
+export HTAP_OLTP_THREADS="8"                     # matches node0's vCPU budget (node1 is NVMeVirt's own threads)
+export HTAP_LLT_COUNT="2"                        # lighter version-accumulation pressure for a first pass
+export HTAP_WARMUP_DURATION="30"
+export HTAP_DURATION="300"                       # informational only (not load-bearing in profile-htap.sh)
+export HTAP_CTX_INTERVAL="30"
+export HTAP_OLAP_RUNS="3"                        # fewer runs -- naive per-SST blocking offload untested at this concurrency
+export HTAP_JOIN_CUTOFF="9000"                   # ~90% selectivity, scaled proportionally to HTAP_TABLE_SIZE
+export HTAP_SELECTIVITY_CUTOFFS="100 1000 3000 6000 9000"
+export HTAP_QUERY_TIMEOUT="3600"                 # generous -- naive offload's per-SST latency is unknown/possibly slow
 
 # Control mechanism: rocksdb_nvmevirt_enabled is checked per-iterator-creation
 # -- see profile-htap.sh's ROCKSDB_NVMEVIRT_ENABLED handling. Default true
