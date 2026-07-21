@@ -16,6 +16,12 @@
 #     guest-phase6-verify.sh; mysqld runs directly out of the build dir) ---
 export FLAX_PS_BUILD_DIR="$HOME/flax-build/percona-server/build"
 
+# This is a raw build tree, not an installed prefix, so the mysql/mysqladmin
+# client binaries only exist under runtime_output_directory/ -- there's no
+# system-wide client to fall back to. mysql-control.sh/profile-htap.sh invoke
+# both as bare commands, so they must be on PATH.
+export PATH="${FLAX_PS_BUILD_DIR}/runtime_output_directory:${PATH}"
+
 # Socket/pid/datadir for this profiling run -- distinct from guest-phase6-
 # verify.sh's own correctness-test instance (different socket/port/datadir)
 # so the two don't collide if run back-to-back.
