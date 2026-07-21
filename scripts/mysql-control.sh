@@ -250,7 +250,12 @@ start_mysql() {
         # datadir -- RocksDB's own I/O tracks an absolute db_path internally
         # and doesn't care, but FLAX's own file I/O does. Confirmed 2026-07-17
         # via nvmevirt_debug.log showing 0 bytes loaded for a relative path.
-        (cd "$DATADIR" && ${BENCH_SUDO-sudo} "$MYSQLD_BIN" --defaults-file="$CONFIG_FILE" --user="${MYSQL_DAEMON_USER:-mysql}" --log-error="$ERROR_LOG" > /dev/null 2>&1) &
+        #
+        # The cd must happen INSIDE the sudo'd command, not before it --
+        # DATADIR is root-owned (created via sudo mkdir/initialize-insecure)
+        # with restrictive permissions, so the invoking non-root guest user
+        # can't cd into it directly (confirmed 2026-07-21: "Permission denied").
+        ${BENCH_SUDO-sudo} bash -c "cd '$DATADIR' && exec '$MYSQLD_BIN' --defaults-file='$CONFIG_FILE' --user='${MYSQL_DAEMON_USER:-mysql}' --log-error='$ERROR_LOG'" > /dev/null 2>&1 &
     else
         ${BENCH_SUDO-sudo} "$MYSQLD_BIN" --defaults-file="$CONFIG_FILE" --user="${MYSQL_DAEMON_USER:-mysql}" --log-error="$ERROR_LOG" > /dev/null 2>&1 &
     fi
