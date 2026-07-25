@@ -129,11 +129,28 @@ CF_NAME=""
 if [ -n "$CF_NAME" ]; then
     log_info "Migrating OLAP tables (sbtest1–4) to ${CF_NAME} CF for offload coverage..."
     for N in 1 2 3 4; do
-        log_info "  Rebuilding PRIMARY KEY for sbtest${N} with cfname=${CF_NAME} ..."
+        PRE_COUNT=$(mysql --socket="$SOCKET" "$BENCHMARK_DB" -N -e "SELECT COUNT(*) FROM sbtest${N};" 2>/dev/null)
+        log_info "  Rebuilding PRIMARY KEY for sbtest${N} (${PRE_COUNT:-?} rows before) with cfname=${CF_NAME} ..."
+        # DROP+ADD PRIMARY KEY on a RocksDB-backed table is a full physical row
+        # rewrite (the PK IS the storage key), not a metadata change -- this was
+        # previously "non-fatal" on error, which let a failed rewrite silently
+        # empty a table (confirmed: sbtest3 had 0 rows after the 20260722_053825
+        # run, see project_flax_integration_status memory). Now hard-fails on
+        # either an ALTER error or a silent row-count drop, instead of only
+        # surfacing hours later when the join produces an empty result.
         mysql --socket="$SOCKET" "$BENCHMARK_DB" \
             -e "ALTER TABLE sbtest${N} DROP PRIMARY KEY,
-                    ADD PRIMARY KEY (id) COMMENT 'cfname=${CF_NAME}';" || \
-            log_error "  WARNING: CF migration failed for sbtest${N} (non-fatal)"
+                    ADD PRIMARY KEY (id) COMMENT 'cfname=${CF_NAME}';" || {
+            log_error "  CF migration FAILED for sbtest${N} (ALTER TABLE error) -- aborting"
+            exit 1
+        }
+        POST_COUNT=$(mysql --socket="$SOCKET" "$BENCHMARK_DB" -N -e "SELECT COUNT(*) FROM sbtest${N};" 2>/dev/null)
+        if [ "${POST_COUNT:-0}" -eq 0 ] && [ "${PRE_COUNT:-0}" -gt 0 ]; then
+            log_error "  CF migration for sbtest${N} silently dropped all rows (${PRE_COUNT} -> 0) -- aborting"
+            exit 1
+        elif [ "${POST_COUNT:-0}" -ne "${PRE_COUNT:-0}" ]; then
+            log_error "  WARNING: sbtest${N} row count changed during CF migration (${PRE_COUNT} -> ${POST_COUNT})"
+        fi
     done
     log_info "CF migration complete — sbtest1–4 are now in ${CF_NAME} CF"
     # Verify via RocksDB DDL

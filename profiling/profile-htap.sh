@@ -1007,6 +1007,26 @@ for RUN in $(seq 1 "$HTAP_OLAP_RUNS"); do
     fi
 done
 
+# ── Phase 9: Capture mysqld's error log ──────────────────────────────────────
+# Queried directly from the running server rather than derived from a
+# hardcoded per-engine datadir mapping, so this stays correct regardless of
+# engine. This is the only place a query getting killed by
+# `max_execution_time` (e.g. HTAP_QUERY_TIMEOUT) would ever be visible --
+# the OLAP join queries above run with `2>/dev/null`, so a timed-out query
+# leaves no trace anywhere else in this results directory. On NVMeVirt-backed
+# datadirs (/mnt/nvme) this file is also the ONLY copy: that filesystem gets
+# wiped by nvmev's mount.sh on every guest reboot, so without this copy the
+# log is unrecoverable once the guest restarts (confirmed the hard way --
+# see project_flax_integration_status memory, 20260722_053825 run).
+log_info "Capturing mysqld error log..."
+ERROR_LOG_PATH=$(mysql --socket="$SOCKET" -N -e "SHOW VARIABLES LIKE 'log_error'" 2>/dev/null | awk '{print $2}')
+if [ -n "$ERROR_LOG_PATH" ] && ${BENCH_SUDO-sudo} test -f "$ERROR_LOG_PATH"; then
+    ${BENCH_SUDO-sudo} cp "$ERROR_LOG_PATH" "${RESULT_DIR}/mysqld_error.log"
+    log_info "  mysqld error log saved to: ${RESULT_DIR}/mysqld_error.log"
+else
+    log_error "  Could not capture mysqld error log (path='${ERROR_LOG_PATH:-unknown}') -- skipping"
+fi
+
 # Fix ownership: perf record runs as root (via sudo), so .data files are root-owned.
 # Chown the whole result dir back to the invoking user so VSCode/SCP can read the files.
 if [ -n "${SUDO_USER:-}" ]; then
@@ -1022,4 +1042,5 @@ log_info "  Version growth   : ${RESULT_DIR}/htap_version_growth.csv"
 log_info "  Flamegraphs      : ${RESULT_DIR}/flamegraph_htap_run*.svg"
 log_info "  OLTP log         : ${RESULT_DIR}/sysbench_htap_oltp.txt"
 log_info "  Resource summary : ${RESULT_DIR}/profiling_htap_resource_summary.csv"
+log_info "  mysqld error log : ${RESULT_DIR}/mysqld_error.log"
 log_info "=========================================="
