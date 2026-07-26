@@ -667,6 +667,24 @@ for RUN in $(seq 1 "$HTAP_OLAP_RUNS"); do
         log_error "  WARNING: Only ${llt_alive}/${HTAP_LLT_COUNT} LLTs still alive at run ${RUN}"
     fi
 
+    # Re-flush the memtable before every run after the first.
+    # The pre-loop flush (above) only covers Run 1 — OLTP keeps writing for the
+    # ~HTAP_QUERY_TIMEOUT duration of each prior run, so by Run 2/3 the memtable
+    # has re-accumulated a run's worth of new versions on top of the SSTable
+    # chains. Memtable-resident versions are traversed via the host's own
+    # unaccelerated FindNextUserEntry regardless of engine (CSD/NVMeVirt offload
+    # only covers on-disk SST reads), so leaving them unflushed understates SST
+    # version pressure AND adds unaccelerated CPU work each run — a likely
+    # contributor to OLAP runs approaching/exceeding HTAP_QUERY_TIMEOUT.
+    if [ "$IS_MYROCKS" = "true" ] && [ "$RUN" -gt 1 ]; then
+        log_info "Flushing RocksDB memtable to SSTables before run ${RUN}..."
+        mysql --socket="$SOCKET" \
+            -e "SET GLOBAL rocksdb_force_flush_memtable_now = 1;" 2>/dev/null || \
+            log_error "  WARNING: memtable flush failed before run ${RUN}"
+        log_info "Waiting 30s for background compaction to settle..."
+        sleep 30
+    fi
+
     # InnoDB: snapshot global status before query
     innodb_before=""
     if [ "$ENGINE" = "percona-innodb" ]; then
