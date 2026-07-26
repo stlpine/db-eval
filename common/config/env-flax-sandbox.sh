@@ -57,10 +57,21 @@ wait_for_mount_settle() { return 0; }
 
 # Custom perf built from FLAX/linux/linux-6.0.10/tools/perf (installed to
 # /usr/local/bin/perf) has real DWARF unwind support (libdw-dwarf-unwind: on,
-# confirmed 2026-07-21 via a manual perf record/script frame-depth check).
+# confirmed 2026-07-21 via a manual perf record/script frame-depth check) --
+# dwarf mode itself is not broken here, unlike the CEMU thread's VM-perf
+# problem. Switched to fp anyway (2026-07-26): dwarf's post-processing cost
+# turned out to be the real bottleneck, not correctness -- `perf script`
+# symbolication of a single ~200-300MB dwarf trace took 4-6+ hours in this
+# resource-constrained guest (confirmed on run 20260725_165813), dwarfing the
+# ~1h the actual OLTP+OLAP workload takes. Requires percona-server to be
+# built with -fno-omit-frame-pointer (added to guest-phase5's cmake
+# invocation the same day) -- re-run guest-phase5 before this takes effect,
+# and sanity-check the first post-switch flamegraph's frame depth (fp mode
+# truncates silently if any linked library lacks frame pointers -- see
+# project_flax_integration_status memory for the full tradeoff writeup).
 # No cgroup/cgexec wrapper here -- guest isn't set up with cgroups, and the
 # workload below is already scaled down, so memory pressure isn't a concern.
-export PERF_CALL_GRAPH="dwarf"
+export PERF_CALL_GRAPH="fp"
 
 # env.sh defaults PERF_EVENT to "cpu_core/cycles/" -- the hybrid P/E-core PMU
 # name specific to the bare-metal i7-13700K. This QEMU guest's virtual CPU
