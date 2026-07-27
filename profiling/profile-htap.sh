@@ -389,6 +389,22 @@ export PERF_CTX_USE_IS_TABLE
 
 start_monitors "$RESULT_DIR" "profiling_htap"
 
+# Total time the LLTs (and OLTP) must stay alive to cover the full OLAP loop.
+# Must match the OLAP loop's actual wall-clock structure below: warmup, the
+# pre-loop flush+settle, HTAP_OLAP_RUNS query timeouts, AND the per-run
+# re-flush+settle (30s) inserted before every run after the first (see the
+# "Re-flush the memtable before every run after the first" block in the OLAP
+# loop). Previously this only accounted for warmup + OLAP_RUNS*QUERY_TIMEOUT,
+# which omitted the flush/settle overhead entirely -- with a fixed LLT sleep
+# duration that didn't grow to match, the LLTs died up to ~95s before the
+# last OLAP run actually finished (confirmed 2026-07-27,
+# percona-myrocks-nvmevirt/20260726_150128: llt_count_active hit 0 mid-Run-3,
+# visibly distorting that run's perf-context deltas). FLUSH_SETTLE_OVERHEAD
+# covers the (HTAP_OLAP_RUNS - 1) re-flush waits; the initial pre-loop
+# flush+settle is already covered by the existing +60s margin below.
+FLUSH_SETTLE_OVERHEAD=$(( 30 * (HTAP_OLAP_RUNS - 1) ))
+LLT_SLEEP_DURATION=$(( HTAP_WARMUP_DURATION + HTAP_OLAP_RUNS * HTAP_QUERY_TIMEOUT + FLUSH_SETTLE_OVERHEAD ))
+
 # Log configuration
 CONFIG_LOG="${RESULT_DIR}/profiling_config.log"
 {
@@ -434,7 +450,7 @@ CONFIG_LOG="${RESULT_DIR}/profiling_config.log"
     echo "PERF_CALL_GRAPH: ${PERF_CALL_GRAPH:-dwarf}"
     echo "NOTE: k index dropped on all tables (non-indexed join per AIDE paper)"
     echo "NOTE: LLTs hold GC back so versions accumulate across OLAP runs (version pressure visible in flamegraphs)"
-    echo "NOTE: LLT sleep = HTAP_WARMUP_DURATION + HTAP_OLAP_RUNS * HTAP_QUERY_TIMEOUT = $((HTAP_WARMUP_DURATION + HTAP_OLAP_RUNS * HTAP_QUERY_TIMEOUT))s (covers full experimental window)"
+    echo "NOTE: LLT sleep = HTAP_WARMUP_DURATION + HTAP_OLAP_RUNS * HTAP_QUERY_TIMEOUT + FLUSH_SETTLE_OVERHEAD = ${LLT_SLEEP_DURATION}s (covers full experimental window, including per-run re-flush waits)"
     echo "NOTE: OLTP rand-type=pareto (skewed, hot rows accumulate long version chains per LLT paper §5.2.1)"
     echo "NOTE: Analytical sessions use REPEATABLE-READ (per AIDE §6.3 + LLT paper §5.1)"
     echo "NOTE: Memtable flushed before OLAP phase + 30s compaction settling wait (ensures versions in SSTables, stable background I/O)"
@@ -491,7 +507,7 @@ trap cleanup EXIT
 
 # ── Phase 3: Start OLTP background ───────────────────────────────────────────
 
-OLTP_TOTAL=$(( HTAP_WARMUP_DURATION + HTAP_OLAP_RUNS * HTAP_QUERY_TIMEOUT + 60 ))
+OLTP_TOTAL=$(( LLT_SLEEP_DURATION + 60 ))
 log_info "Starting OLTP background (${HTAP_OLTP_THREADS} threads, ${OLTP_TOTAL}s)..."
 
 sysbench oltp_read_write \
@@ -524,7 +540,7 @@ SET SESSION wait_timeout=86400;
 SET SESSION net_read_timeout=86400;
 SET SESSION net_write_timeout=86400;
 START TRANSACTION;
-SELECT SLEEP($((HTAP_WARMUP_DURATION + HTAP_OLAP_RUNS * HTAP_QUERY_TIMEOUT)));
+SELECT SLEEP(${LLT_SLEEP_DURATION});
 ROLLBACK;
 SQL
     LLT_PIDS+=($!)
