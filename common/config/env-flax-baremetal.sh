@@ -108,3 +108,22 @@ export PERF_EVENT="cycles"
 # even match this deployment's cpus=/slm_cpus=/csd_cpus= values). Install
 # it and fix perf.sh's CPU list BEFORE trusting any timing numbers from a
 # real profiling run -- see project_flax_integration_status memory.
+
+# TEMPORARY disk-safety override, added 2026-07-29 for the first overnight
+# HTAP run -- REMOVE this block once /mnt/nvme has more capacity (either
+# the CF-path split so only sbtest1-4 need to live on the emulated device,
+# or a bigger memmap= reservation). Full scale (QUERY_TIMEOUT=7200,
+# OLAP_RUNS=5, ~10h/run) was estimated to fill the current ~24GB-headroom
+# /mnt/nvme well before either run finishes, calibrated from the sandbox's
+# own disk-full incident (3.2GB / 8 threads / ~3h -> ~0.13GB/hour/thread;
+# 24 threads here -> ~3.2-4GB/hour, so ~10h/run x 2 runs sharing the same
+# --skip-prepare data is roughly 70-80GB of growth against ~24GB budget).
+# This must live HERE, not as an export in the calling shell before
+# run-flax-baremetal-htap.sh runs -- env.sh sets HTAP_QUERY_TIMEOUT/
+# HTAP_OLAP_RUNS with a plain unconditional export (not ${VAR:-default}),
+# so it silently clobbers any pre-set value from the parent shell when
+# sourced (confirmed 2026-07-29: an overnight script's own pre-export was
+# overwritten this way, and the run proceeded at full scale unnoticed
+# until checking the logged OLTP duration).
+export HTAP_QUERY_TIMEOUT="3600"
+export HTAP_OLAP_RUNS="3"
