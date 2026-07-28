@@ -24,6 +24,11 @@ Database benchmarking and profiling framework comparing storage engines (Percona
 
 ```
 db-eval/
+  mise.toml                     # Pins python=3.12; auto-creates/manages .venv on `mise` activation
+  requirements.txt               # python-pptx, pandas, matplotlib — the only 3rd-party deps db-eval's .py files need
+  .venv/                         # mise-managed venv (see "Python Environment" below)
+  create_presentation.py         # InnoDB vs MyRocks benchmark deck (TPC-C/TPC-H/ClickBench/Sysbench results)
+  create_cemu_presentation.py    # CEMU MVCC filter lab-meeting deck (current work, updated most recently)
   common/config/
     env.sh                  # All benchmark parameters (source this first)
     my-percona-myrocks.cnf  # MyRocks MySQL config (rocksdb_perf_context_level=1)
@@ -32,6 +37,7 @@ db-eval/
     mysql-control.sh        # Start/stop MySQL instances
     monitor.sh              # pidstat/iostat/mpstat/vmstat monitoring functions
     run-benchmark.sh        # Top-level benchmark runner
+    plot-results.py         # matplotlib plotting for benchmark results (pandas + matplotlib)
   tpcc/
     run.sh                  # TPC-C runner (args: <engine> <threads> <result_dir>)
     prepare.sh
@@ -43,6 +49,21 @@ db-eval/
   results/
     <benchmark>/<engine>/<timestamp>/   # All result output goes here
 ```
+
+## Python Environment (Presentation & Plotting Scripts)
+
+- Managed by `mise` — `mise.toml` pins `python = "3.12"` and sets `env._.python.venv = {path = ".venv", create = true}`, so `.venv` is created/activated automatically whenever `mise` is active in this directory. No manual `python -m venv` needed.
+- Dependencies are pinned in `requirements.txt` (`python-pptx`, `pandas`, `matplotlib` — verified against every `import`/`from` in db-eval's `.py` files, nothing more). Install with:
+  ```bash
+  mise exec -- python -m pip install -r requirements.txt
+  ```
+- Run scripts via `mise exec -- python <script>.py` (or activate `.venv` directly) so they use the pinned venv, not the global mise Python.
+- **In a normal interactive terminal, `mise exec --` is not required** — `~/.zshrc` sources `mise activate zsh`, which hooks `chpwd`/`precmd` to auto-run `mise hook-env` whenever you `cd` into `db-eval/` or a subdirectory. Just `cd db-eval && python script.py` picks up `.venv` automatically. The `mise exec --` (or `eval "$(mise hook-env)"`) prefix is only needed for tooling that runs commands non-interactively without a real `cd`/prompt cycle (e.g. Claude Code's Bash tool) — verified empirically: `env | grep mise` there shows `__MISE_ZSH_CHPWD_RAN=0`, meaning the auto-activation hook never fired even though `pwd` was already inside `db-eval/`.
+- **Gotcha**: if `mise` floats the pinned `3.12` to a new patch version and removes the old install (e.g. 3.12.12 → 3.12.13), the existing `.venv/bin/python` symlink dangles. `pip`/`python` inside `.venv` then silently fail or fall through to whatever global Python is on `PATH` — no error surfaces until an import fails. Fix: `rm -rf .venv && mise install` (recreates `.venv` per `mise.toml`), then reinstall from `requirements.txt`.
+
+### `create_cemu_presentation.py` notes
+- Both bar/line chart helpers (`add_bar_chart`, `add_line_chart`) require explicit `x_axis_title` and `y_axis_title` args — python-pptx does not label axes by default, and it's easy to add a chart with only a y-axis title. Always pass both.
+- The flamegraph comparison slide uses `add_image_or_placeholder()`: it embeds a PNG if one exists at the expected path, otherwise draws a placeholder box naming the source SVG and the `rsvg-convert` command to produce the PNG. **python-pptx cannot embed SVG directly** (its image support is PIL-backed; PIL has no SVG decoder) — flamegraphs must be converted from `.svg` to `.png` before they'll render in the deck. Source SVGs for the primary comparison pair live at `results/profiling/htap/percona-myrocks-csd/{20260629_125215,20260629_165929}/flamegraph_htap_run1.svg`.
 
 ## Key Config Values (env.sh)
 
@@ -203,3 +224,78 @@ sudo perf stat -p $MYSQLD_PID -e cycles,instructions,cache-misses,LLC-load-misse
 - `rocksdb_perf_context_level = 3` adds ~5-10% overhead — use only for profiling runs, not final benchmark numbers
 - For maximizing snapshot overhead visibility, consider `SET SESSION transaction_isolation = 'REPEATABLE-READ'` during profiling (current default is READ-COMMITTED which reduces it slightly)
 - Perf data with dwarf can be 1-5GB per 60s recording
+
+---
+
+## FLAX/NVMeVirt HTAP Harness (separate sub-project, `percona-myrocks-nvmevirt` engine)
+
+Same HTAP profiling machinery as the CEMU thread above (`profiling/profile-htap.sh`,
+`scripts/mysql-control.sh`), reused for a **different, independent research thread** —
+see `~/Projects/snu-csl/CLAUDE.md` and `FLAX/CLAUDE.md` for what FLAX itself is. Two
+deployment environments, each with its own env-override file, both hooked into
+`common/config/env.sh` via the same mechanism as `CEMU_VM_ENV`:
+
+| Environment | Env override file | Runner script | Scale |
+|---|---|---|---|
+| QEMU sandbox guest | `env-flax-sandbox.sh` (set `FLAX_SANDBOX_ENV`) | `run-flax-sandbox-htap.sh` | Scaled down (10k rows/table, 8 OLTP threads, 2 LLTs) |
+| Bare metal (`s1`) | `env-flax-baremetal.sh` (set `FLAX_BAREMETAL_ENV`) | `run-flax-baremetal-htap.sh` | Full AIDE-paper scale (100k rows/table, 24 threads, 4 LLTs) — `env.sh`'s own unmodified defaults |
+
+### Gotchas specific to this harness
+
+- **`env.sh` sets `HTAP_QUERY_TIMEOUT`/`HTAP_OLAP_RUNS`/etc. with a plain unconditional
+  `export`, not `${VAR:-default}`.** A pre-export from a calling script (e.g. trying to
+  temporarily scale down a run) gets silently clobbered the moment `env.sh` is sourced
+  — confirmed 2026-07-29 when an overnight run's own scale-down override had no visible
+  effect and proceeded at full scale unnoticed until checking the logged OLTP duration.
+  Any such override **must** live inside whichever env-override file is sourced *last*
+  (`env-flax-sandbox.sh`/`env-flax-baremetal.sh`, sourced at the very end of `env.sh`),
+  never in the shell that calls into these scripts.
+- **`sysbench-htap/prepare.sh`'s own `mysql` calls have no explicit `-u`**, so they
+  default to the client's OS-username-as-MySQL-username fallback. `--initialize-insecure`
+  only creates a passwordless `root@localhost`, so running `prepare.sh` as anyone other
+  than root fails with `Access denied` before ever reaching the actual sysbench prepare
+  step. `run-flax-baremetal-htap.sh` wraps this specific call in `sudo -E` (root
+  identity, but preserving the calling shell's exported variables, which plain `sudo`
+  would otherwise reset along with `$HOME`).
+- **`mysql-control.sh`'s own `stop_mysql()` has the identical no-explicit-`-u` issue**
+  (`mysqladmin ... shutdown`) — not yet fixed at the source, it just falls back to a
+  force-kill after a ~30s timeout, which works but is noisy in logs. Known, non-blocking.
+- **`percona-myrocks-nvmevirt`'s debug-build `mysqld` (8.4.10-10-debug) can crash on
+  `ANALYZE TABLE`** with an internal assertion
+  (`MDL_checker::is_read_locked` in `dd::cache::Dictionary_client::acquire`) when a
+  table already has histogram statistics from a prior `ANALYZE ... UPDATE HISTOGRAM`
+  cycle against the same long-lived datadir — confirmed to trigger on as few as two
+  consecutive cycles in practice, and `ANALYZE TABLE ... DROP HISTOGRAM` hits the exact
+  same assertion (not a viable workaround). Only fix found: a genuinely fresh
+  `mysql-control.sh <engine> init` (which does `rm -rf $DATADIR` + fresh
+  `--initialize-insecure`) before the next `ANALYZE TABLE` runs — there is no way to
+  keep a long-lived FLAX datadir across many profiling sessions without eventually
+  hitting this.
+- **On `s1` specifically, a plain `rm -rf $DATADIR` was not always sufficient to
+  recover** even after the above — `mysqld` failed to start afterward with an `InnoDB`
+  redo-log decryption error (`no keyring configured`, a red herring — nothing was
+  actually encrypted). Re-running FLAX's own `src/mount.sh` (a real `mkfs.ext4 -F` on
+  the underlying NVMeVirt-backed device, not just deleting files on top of it) resolved
+  it. Suspected RAM-backed-filesystem-specific quirk, not fully root-caused.
+- **`env-flax-baremetal.sh`'s `check_ssd_device`/`check_ssd_mount` are real safety
+  checks** (unlike the sandbox's blind no-op stubs) — they resolve the NVMeVirt device
+  via its stable `/dev/disk/by-id/nvme-CSL_Virt_MN_01_CSL_Virt_SN_01` alias and verify
+  `/mnt/nvme` is actually mounted from it, given `s1` has multiple physical NVMe
+  devices whose `/dev/nvmeXn1` naming has been observed reshuffling across reboots.
+  `check_ssd_mount` is self-sufficient (resolves the device itself if not already set)
+  because `profile-htap.sh` (shared, not FLAX-specific) calls it alone, without calling
+  `check_ssd_device` first — don't assume call order across scripts.
+- **Full-scale (`HTAP_QUERY_TIMEOUT=7200`, `HTAP_OLAP_RUNS=5`) HTAP runs can fill
+  `/mnt/nvme` before completing**, if that filesystem is small (the emulated device's
+  capacity is just a `memmap=` GRUB reservation, easy to under-size early on and forget
+  to revisit — see `FLAX/CLAUDE.md`'s bare-metal section). Calibration from one clean
+  single-session disk-full incident: ~0.13GB/hour/OLTP-thread. Two root causes worth
+  fixing rather than permanently working around by scaling down the query loop: (1) the
+  emulated device's `memmap=` reservation can simply be made bigger (more physical RAM
+  is usually available); (2) only the offloaded column family (`sbtest1-4` in the
+  current `join4.sql`-driven setup) actually needs to live on the emulated device at
+  all — the other 8 tables could use RocksDB's per-CF `cf_paths` to live on a real,
+  larger host disk instead, cutting emulated-device growth roughly to a third (OLTP
+  writes spread ~evenly across all 12 tables). Neither implemented yet as of
+  2026-07-29 — `env-flax-baremetal.sh` currently has a *temporary* scale-down override
+  instead (see that file's own comment for the math and removal criteria).
