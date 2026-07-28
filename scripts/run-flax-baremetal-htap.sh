@@ -64,7 +64,18 @@ if [ "$SKIP_PREPARE" = false ]; then
         bash "${SCRIPT_DIR}/mysql-control.sh" percona-myrocks-nvmevirt init || { log_error "Failed to init datadir"; exit 1; }
     fi
     bash "${SCRIPT_DIR}/mysql-control.sh" percona-myrocks-nvmevirt start || { log_error "Failed to start mysqld for data prep"; exit 1; }
-    bash "${SCRIPT_DIR}/../sysbench-htap/prepare.sh" percona-myrocks-nvmevirt || { bash "${SCRIPT_DIR}/mysql-control.sh" percona-myrocks-nvmevirt stop; exit 1; }
+    # prepare.sh's own internal `mysql` calls have no explicit -u, so they
+    # default to the MySQL client's OS-username-as-MySQL-username fallback.
+    # --initialize-insecure only creates a passwordless root@localhost --
+    # running as the plain invoking user (not root) fails with "Access
+    # denied" before ever reaching the sysbench prepare step (confirmed
+    # 2026-07-28). sudo the whole script so it inherits root, matching how
+    # mysqld itself and every other FLAX-path command in this harness
+    # already runs as root.
+    # -E: sudo resets the environment by default, which would drop the
+    # SOCKET/BENCHMARK_DB/HTAP_*/etc. variables env.sh already exported in
+    # this shell -- prepare.sh needs those, not just root's identity.
+    sudo -E bash "${SCRIPT_DIR}/../sysbench-htap/prepare.sh" percona-myrocks-nvmevirt || { bash "${SCRIPT_DIR}/mysql-control.sh" percona-myrocks-nvmevirt stop; exit 1; }
     bash "${SCRIPT_DIR}/mysql-control.sh" percona-myrocks-nvmevirt stop
     log_info "Data preparation complete."
 else
