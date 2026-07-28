@@ -332,3 +332,12 @@ fi
 if [ -n "${FLAX_SANDBOX_ENV:-}" ] && [ -f "${FLAX_SANDBOX_ENV}" ]; then
     source "${FLAX_SANDBOX_ENV}"
 fi
+
+# Same mechanism again, for the FLAX/NVMeVirt bare-metal host (s1) --
+# full AIDE-paper scale, real nvmev.ko-backed device, no QEMU nesting.
+# Set FLAX_BAREMETAL_ENV to env-flax-baremetal.sh's absolute path before
+# sourcing. Deliberately does NOT override HTAP_* parameters -- this
+# script's own defaults above already ARE the full-scale values.
+if [ -n "${FLAX_BAREMETAL_ENV:-}" ] && [ -f "${FLAX_BAREMETAL_ENV}" ]; then
+    source "${FLAX_BAREMETAL_ENV}"
+fi
