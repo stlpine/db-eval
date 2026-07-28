@@ -71,6 +71,14 @@ check_ssd_mount() {
         log_error "/mnt/nvme is not mounted at all"
         return 1
     fi
+    # Self-sufficient: don't assume check_ssd_device already ran in this
+    # process and populated $SSD_DEVICE -- some call sites (profile-htap.sh)
+    # call check_ssd_mount alone, without check_ssd_device first (confirmed
+    # 2026-07-29: SSD_DEVICE came back empty there, making every mount look
+    # like the wrong one even when it wasn't). Resolve it here too if unset.
+    if [ -z "${SSD_DEVICE:-}" ]; then
+        check_ssd_device || return 1
+    fi
     if [ "$actual" != "$SSD_DEVICE" ]; then
         log_error "/mnt/nvme is mounted from '$actual', but the NVMeVirt device resolved to '$SSD_DEVICE' -- wrong disk mounted, refusing to continue"
         return 1
