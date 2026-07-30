@@ -84,7 +84,22 @@ fi
 
 # Phase 2: HTAP profiling
 log_info "Phase 2: Running HTAP profiling..."
-bash "${SCRIPT_DIR}/../profiling/profile-htap.sh" "$CUTOFF" "" percona-myrocks-nvmevirt
+# sudo -E, same as Phase 1's prepare.sh call above: profile-htap.sh's own
+# internal `mysql --socket="$SOCKET" -e ...` calls (rocksdb_nvmevirt_enabled
+# toggle, ANALYZE TABLE, histograms, and the "is MySQL responding" check
+# before each OLAP run) have no explicit -u, so they fall back to the OS
+# username as MySQL username -- which doesn't exist as an account (only
+# root@localhost does, from --initialize-insecure) -- and fail with
+# "Access denied" when run as a non-root user. Confirmed 2026-07-31: this
+# silently broke the nvmevirt_enabled toggle (the "no-offload control run"
+# log line prints unconditionally, NOT gated on the SET GLOBAL actually
+# succeeding), ANALYZE TABLE/histograms, and very likely caused a false
+# "MySQL is not responding — aborting remaining runs" (same auth failure
+# misread as the server being down, not necessarily a real crash) that
+# aborted an entire run before any OLAP query executed. -E preserves the
+# calling shell's exported SOCKET/HTAP_*/etc. variables, which plain sudo
+# would otherwise reset along with $HOME.
+sudo -E bash "${SCRIPT_DIR}/../profiling/profile-htap.sh" "$CUTOFF" "" percona-myrocks-nvmevirt
 
 log_info "=========================================="
 log_info "FLAX bare-metal HTAP profiling complete"
