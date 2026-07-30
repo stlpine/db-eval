@@ -1,5 +1,5 @@
 [mysqld]
-# Percona Server 8.4 with MyRocks -- FLAX/NVMeVirt offload (bare-metal s1 variant)
+# Percona Server 8.4 with MyRocks -- FLAX/NVMeVirt offload (bare-metal variant)
 #
 # Identical content to my-percona-myrocks-nvmevirt-sandbox.cnf -- this file
 # was never guest-specific to begin with (no hardcoded paths/usernames,

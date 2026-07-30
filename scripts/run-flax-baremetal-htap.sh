@@ -1,6 +1,6 @@
 #!/bin/bash
 # HTAP profiling runner for percona-myrocks-nvmevirt on the real bare-metal
-# FLAX/NVMeVirt host (s1) -- full AIDE-paper scale, real nvmev.ko-backed
+# FLAX/NVMeVirt host -- full AIDE-paper scale, real nvmev.ko-backed
 # device, no QEMU nesting. See run-flax-sandbox-htap.sh for the QEMU-guest
 # equivalent (scaled-down first pass this bare-metal run supersedes).
 #

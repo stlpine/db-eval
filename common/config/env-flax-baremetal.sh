@@ -1,5 +1,5 @@
 #!/bin/bash
-# Bare-metal (s1) overrides for percona-myrocks-nvmevirt HTAP profiling.
+# Bare-metal overrides for percona-myrocks-nvmevirt HTAP profiling.
 # Do not source directly -- set FLAX_BAREMETAL_ENV to this file's absolute
 # path before running any db-eval script; env.sh sources it automatically
 # at the end.
@@ -10,10 +10,15 @@
 # HTAP_LLT_COUNT=4, HTAP_QUERY_TIMEOUT=7200), which is what this bare-metal
 # pass is for. This file only overrides paths/binaries specific to this
 # deployment and the real (non-emulated-in-QEMU) NVMeVirt device.
+#
+# Updated for a migration to a new bare-metal host (deliberate migration,
+# not a same-host update -- an older CPU generation plus a permanent
+# whole-NUMA-node core reservation for NVMeVirt's own dispatcher/IO/compute
+# threads, present in both offload-ON and offload-OFF configs, left mysqld
+# starved of cores on the original host relative to what a comparison host
+# had). See CPU/NUMA topology notes in FLAX/src/init_nvmev.sh and perf.sh.
 
-# --- Percona Server build tree (raw build dir, not an installed prefix --
-#     same pattern as the sandbox, just built directly on s1 instead of
-#     inside the guest) ---
+# --- Percona Server build tree (raw build dir, not an installed prefix) ---
 export FLAX_PS_BUILD_DIR="$HOME/flax-scratch/repos/percona-server/build"
 export PATH="${FLAX_PS_BUILD_DIR}/runtime_output_directory:${PATH}"
 
@@ -23,38 +28,33 @@ export MYSQL_PID_PERCONA_MYROCKS_NVMEVIRT="/tmp/mysql_nvmevirt_htap.pid"
 # Must live on the NVMeVirt-backed filesystem -- csdvirt_load_files derives
 # physical LBAs via FIEMAP on the SST file; an SST on the wrong filesystem
 # yields a bogus LBA into NVMeVirt's address space. /mnt/nvme confirmed as
-# the real emulated device's mount point (nvme3n1 -> CSL_Virt_SN_01,
-# 2026-07-28 via init_nvmev.sh + mount.sh).
+# the real emulated device's mount point on this host too.
 export MYSQL_DATADIR_PERCONA_MYROCKS_NVMEVIRT="/mnt/nvme/mysql-nvmevirt-htap-data"
 
-# Same as the sandbox: mysqld runs as root because csdvirt_init_dev()
-# needs root for device-node access.
+# mysqld runs as root because csdvirt_init_dev() needs root for device-node
+# access.
 export MYSQL_DAEMON_USER="root"
 export BENCH_SUDO="sudo"
 
-# Use the same .cnf content as the sandbox (it's already fully generic --
-# no guest-specific paths baked in, just __PLACEHOLDER__ tokens substituted
-# by mysql-control.sh at runtime) but under a bare-metal-named file, purely
-# so result logs/configs are unambiguous about which environment produced
-# them.
+# Fully generic already (no hardcoded paths/usernames, just __PLACEHOLDER__
+# tokens substituted by mysql-control.sh at runtime) -- no per-host fork
+# needed.
 export MYSQL_NVMEVIRT_CONFIG_OVERRIDE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/my-percona-myrocks-nvmevirt-baremetal.cnf"
 
-# FlameGraph and db-eval itself must be present on s1 -- verify before
-# running (not auto-cloned by this file):
+# FlameGraph and db-eval itself must be present on this host -- verify
+# before running (not auto-cloned by this file):
 #   git clone https://github.com/brendangregg/FlameGraph ~/FlameGraph
 #   git clone <db-eval remote> ~/db-eval   (or wherever RESULTS_DIR below expects)
 export FLAMEGRAPH_DIR="$HOME/FlameGraph"
 export RESULTS_DIR="$HOME/db-eval/results"
 
-# Real safety check, unlike the sandbox's blind no-op -- s1 has multiple
-# physical NVMe devices whose /dev/nvmeXn1 naming has already been observed
-# reshuffling across reboots (project_flax_nvme_naming_instability memory;
-# confirmed again 2026-07-28 during this same bare-metal bring-up, where
-# nvme0n1/nvme1n1/nvme2n1 identities rotated between checks and a wrapper
-# mount briefly grabbed the wrong physical disk). Resolve the emulated
-# device by its stable by-id alias (same one mount.sh itself uses) and
+# Real safety check, unlike the sandbox's blind no-op -- resolve the
+# emulated device by its stable by-id alias (same one mount.sh itself uses,
+# and the device always reports this same identity regardless of host) and
 # verify /mnt/nvme is actually mounted FROM that device, not just mounted
-# from *something*.
+# from *something*. Device numbering (/dev/nvmeXn1) is not stable across
+# reboots -- confirmed on more than one host in this project now
+# (project_flax_nvme_naming_instability memory).
 check_ssd_device() {
     SSD_DEVICE="$(realpath /dev/disk/by-id/nvme-CSL_Virt_MN_01_CSL_Virt_SN_01 2>/dev/null)"
     if [ -z "$SSD_DEVICE" ]; then
@@ -89,41 +89,30 @@ wait_for_mount_settle() { return 0; }
 export SSD_MOUNT="/mnt/nvme"
 
 # perf built from FLAX/linux/linux-6.0.10/tools/perf, installed to
-# /usr/local/bin/perf (confirmed 2026-07-28: real DWARF unwind support,
-# multi-frame symbolicated stacks). Unlike the sandbox, there's no
-# resource-constrained-guest reason to prefer fp mode here -- bare metal
-# has no QEMU nesting overhead, and dwarf is already confirmed working, so
-# use it directly (matches the CEMU thread's own bare-metal choice).
+# /usr/local/bin/perf -- confirmed real DWARF unwind support
+# (libdw-dwarf-unwind: on) on this host. Bare metal, no QEMU nesting
+# overhead, so dwarf is used directly (matches the CEMU thread's own
+# bare-metal choice). Deliberately NOT fp here: fp silently truncates the
+# stack the moment a sample lands in code not built with
+# -fno-omit-frame-pointer (e.g. glibc/libstdc++ internals like
+# std::mutex/std::lock_guard), which would specifically hide the mutex-wait
+# call stacks this profiling round cares about (g_nvmevirt_exec_mutex
+# contention). dwarf unwinds through that correctly, and this host's faster
+# CPU means postprocessing time (the original reason fp was ever needed, in
+# the resource-constrained QEMU sandbox) is not a concern here either.
 export PERF_CALL_GRAPH="dwarf"
 
-# Xeon E5-2640 v4 has no cpu_core hybrid P/E-core PMU (that's specific to
-# newer client Intel chips like the CEMU thread's i7-13700K) -- same
-# "Cannot find PMU 'cpu_core'" issue the sandbox already hit and fixed.
+# This host's CPU is a server-class Xeon (no hybrid P/E-core PMU, which is
+# specific to newer client Intel chips like the CEMU thread's i7-13700K) --
+# same "Cannot find PMU 'cpu_core'" issue already hit and fixed once in this
+# project, expected to apply here too for the same reason.
 export PERF_EVENT="cycles"
 
-# NOTE: cpufrequtils is required for FLAX's own src/init_nvmev.sh CPU
-# frequency throttling step (emulates a "wimpy" ARM compute core) --
-# confirmed missing on s1 as of 2026-07-28 (every cpufreq-set call failed
-# with "command not found", and the CPU list perf.sh throttles doesn't
-# even match this deployment's cpus=/slm_cpus=/csd_cpus= values). Install
-# it and fix perf.sh's CPU list BEFORE trusting any timing numbers from a
-# real profiling run -- see project_flax_integration_status memory.
-
-# TEMPORARY disk-safety override, added 2026-07-29 for the first overnight
-# HTAP run -- REMOVE this block once /mnt/nvme has more capacity (either
-# the CF-path split so only sbtest1-4 need to live on the emulated device,
-# or a bigger memmap= reservation). Full scale (QUERY_TIMEOUT=7200,
-# OLAP_RUNS=5, ~10h/run) was estimated to fill the current ~24GB-headroom
-# /mnt/nvme well before either run finishes, calibrated from the sandbox's
-# own disk-full incident (3.2GB / 8 threads / ~3h -> ~0.13GB/hour/thread;
-# 24 threads here -> ~3.2-4GB/hour, so ~10h/run x 2 runs sharing the same
-# --skip-prepare data is roughly 70-80GB of growth against ~24GB budget).
-# This must live HERE, not as an export in the calling shell before
-# run-flax-baremetal-htap.sh runs -- env.sh sets HTAP_QUERY_TIMEOUT/
-# HTAP_OLAP_RUNS with a plain unconditional export (not ${VAR:-default}),
-# so it silently clobbers any pre-set value from the parent shell when
-# sourced (confirmed 2026-07-29: an overnight script's own pre-export was
-# overwritten this way, and the run proceeded at full scale unnoticed
-# until checking the logged OLTP duration).
-export HTAP_QUERY_TIMEOUT="3600"
-export HTAP_OLAP_RUNS="3"
+# No disk-safety scale-down override here -- this host's emulated device has
+# ~206GB usable capacity (confirmed via `df -h /mnt/nvme`), comfortably
+# covering the calibrated growth estimate for a full-scale
+# two-configuration profiling pass (~70-80GB, per the original bare-metal
+# host's own disk-full incident calibration: ~0.13GB/hour/OLTP-thread).
+# Full AIDE-paper-scale defaults from env.sh (HTAP_QUERY_TIMEOUT=7200,
+# HTAP_OLAP_RUNS=5) apply directly -- removing this constraint was the
+# whole point of migrating to this host.
