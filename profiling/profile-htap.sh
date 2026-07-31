@@ -1028,7 +1028,17 @@ for RUN in $(seq 1 "$HTAP_OLAP_RUNS"); do
         svg="${RESULT_DIR}/flamegraph_htap_run${RUN}.svg"
         perf_size=$(du -h "$perf_data" 2>/dev/null | cut -f1)
         log_info "  Run ${RUN}/${HTAP_OLAP_RUNS}: processing ${perf_size} perf data..."
-        ${BENCH_SUDO-sudo} perf script -i "$perf_data" 2>/dev/null \
+        # --no-inline: resolving the full inline-function chain per address is a
+        # much more expensive query than a plain function-level lookup, and perf
+        # falls back to a synchronous one-address-at-a-time addr2line-style
+        # subprocess for it -- against a debug build with heavy DWARF info, this
+        # can turn a ~30s flamegraph generation into a multi-hour stall with the
+        # process sitting at ~0% CPU (confirmed 2026-07-31: ps/top showed the
+        # perf script process barely accumulating any CPU time over many
+        # minutes, and strace confirmed it was blocked on a slow read/write loop
+        # with a symbolizer helper, not actually stuck/hung). Flamegraphs don't
+        # need per-inline-frame granularity anyway.
+        ${BENCH_SUDO-sudo} perf script -i "$perf_data" --no-inline 2>/dev/null \
             | "${FLAMEGRAPH_DIR}/stackcollapse-perf.pl" \
             | "${FLAMEGRAPH_DIR}/flamegraph.pl" \
                 --title "${ENGINE} HTAP Join4 run${RUN} cutoff=${CUTOFF} ($(printf '%.1f' "${PERF_ELAPSED[$RUN]:-0}")s)" \
