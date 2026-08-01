@@ -59,6 +59,24 @@ fi
 # Phase 1: Data preparation
 if [ "$SKIP_PREPARE" = false ]; then
     log_info "Phase 1: Preparing sysbench-htap data..."
+
+    # Full physical wipe of the NVMeVirt-backed filesystem before every
+    # independent session (on top of prepare.sh's own logical DROP DATABASE
+    # below). sysbench-htap/prepare.sh already resets sbtest1-12 at the table
+    # level, so this isn't needed for correctness -- it's for cleanliness:
+    # without it, a reused datadir directory leaves the *previous* session's
+    # dropped-table SST files sitting on disk pending background compaction/
+    # GC, adding untracked I/O contention early in the new session, and lets
+    # host-level state (e.g. /tmp/nvmevirt_debug.log) accumulate silently
+    # across sessions instead of starting clean. Stop mysqld first --
+    # mount.sh's `umount` fails on a busy device otherwise. Not run as `sudo
+    # bash` (mount.sh already sudo-prefixes its own privileged commands) so
+    # its final `chown -R "$USER":` resolves to the real invoking user, not
+    # root.
+    log_info "Wiping NVMeVirt-backed filesystem for a clean session..."
+    bash "${SCRIPT_DIR}/mysql-control.sh" percona-myrocks-nvmevirt stop 2>/dev/null || true
+    bash "$HOME/flax-scratch/repos/FLAX/src/mount.sh" || { log_error "mount.sh wipe failed"; exit 1; }
+
     if [ ! -d "${MYSQL_DATADIR_PERCONA_MYROCKS_NVMEVIRT}" ]; then
         log_info "Datadir missing — initializing..."
         bash "${SCRIPT_DIR}/mysql-control.sh" percona-myrocks-nvmevirt init || { log_error "Failed to init datadir"; exit 1; }
