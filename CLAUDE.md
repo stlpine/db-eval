@@ -298,4 +298,86 @@ deployment environments, each with its own env-override file, both hooked into
   larger host disk instead, cutting emulated-device growth roughly to a third (OLTP
   writes spread ~evenly across all 12 tables). Neither implemented yet as of
   2026-07-29 — `env-flax-baremetal.sh` currently has a *temporary* scale-down override
-  instead (see that file's own comment for the math and removal criteria).
+  instead (see that file's own comment for the math and removal criteria). Superseded
+  on `star1`: not needed there (~206GB usable), see `env-flax-baremetal.sh`'s own
+  updated comment.
+- **`component_reference_cache` is a mandatory component, not an optional one tied to
+  the KMIP/Vault/OpenID flags disabled at `cmake` time** — confirmed 2026-08-01 by
+  reading `sql/mysqld.cc:2069` (`component_urns[] = {"file://component_reference_cache"}`)
+  and its load call at `sql/mysqld.cc:8139` (`if (!is_help_or_validate_option() &&
+  !opt_initialize) dynamic_loader_srv->load(component_urns, ...)`) — loaded on every
+  *normal* startup (not during `--initialize`/`--initialize-insecure`), unconditionally.
+  It's a separate CMake target (`MYSQL_ADD_COMPONENT(reference_cache ...)` in
+  `components/reference_cache/CMakeLists.txt` → target name `component_reference_cache`)
+  that a `make mysqld mysql mysqladmin`-only build never produces. Missing it doesn't
+  actually crash startup by itself (the load call's own comment confirms it's
+  best-effort, no `unireg_abort()` follows it) — but it's worth building anyway to avoid
+  a confusing red herring in startup logs. Build with
+  `make -j$(nproc) component_reference_cache` alongside whatever else is being rebuilt.
+- **`rocksdb` (the `ha_rocksdb.so` plugin) is a separate CMake target from `mysqld`/
+  `mysql`/`mysqladmin`, not a dependency of them** — confirmed 2026-08-01 when switching
+  the FLAX bare-metal build from `CMAKE_BUILD_TYPE=Debug` to `RelWithDebInfo`: rebuilding
+  only `mysqld mysql mysqladmin` after the reconfigure would have left `ha_rocksdb.so`
+  on the old build flags, silently defeating the entire point of the switch (virtually
+  all the code this project measures — `FindNextUserEntry`, `nvmevirt_table.cc`/
+  `RunMvccFilter` — lives in that plugin, not in `mysqld` itself). Any build-type/flag
+  change requires rebuilding `rocksdb` explicitly alongside the server binaries:
+  `make -j$(nproc) component_reference_cache rocksdb mysqld mysql mysqladmin`.
+- **`/tmp/nvmevirt_debug.log` (the `RunMvccFilter` wall-clock instrumentation) is never
+  truncated automatically between runs** — same class of bug as the already-documented
+  CEMU-thread `cemu_debug.log` gotcha, just not previously caught on this side. Confirmed
+  2026-08-01: after weeks of accumulated runs it had grown to ~4 million lines; a script
+  step that dumps/tails it (`verify.sh`) looked like it was reprocessing enormous amounts
+  of leftover data, when actually it was just displaying the file's entire multi-session
+  history with the current run's own (tiny) output at the tail. Truncate before trusting
+  any log-volume-based read on this file: `sudo truncate -s 0 /tmp/nvmevirt_debug.log`.
+- **`run-flax-baremetal-htap.sh`'s Phase 1 (non-`--skip-prepare`) now does a full
+  physical wipe of `/mnt/nvme` via FLAX's `src/mount.sh` before every independent
+  session**, added 2026-08-01, on top of `prepare.sh`'s own logical `DROP DATABASE`.
+  The logical drop alone was already sufficient for data *correctness* between sessions
+  (confirmed by reading `sysbench-htap/prepare.sh:63`) — the physical wipe is purely for
+  cleanliness: without it, a reused datadir directory leaves the previous session's
+  dropped-table SSTs on disk pending background compaction/GC (minor extra I/O
+  contention early in the new session), separate from and not fully explaining the
+  `nvmevirt_debug.log` accumulation issue above (that log lives outside `/mnt/nvme`
+  entirely and isn't touched by this wipe — truncate it separately). The wipe
+  intentionally does **not** run under `--skip-prepare` (defeats the purpose of that
+  flag, which exists specifically to reuse already-prepared data), and stops any
+  running `mysqld` first since `mount.sh`'s `umount` fails on a busy device — this only
+  stops the engine's own tracked instance (`mysql-control.sh ... stop`), not any
+  manually-started `mysqld` (e.g. a `verify.sh` correctness-test instance) using a
+  different datadir/socket; stop those separately first.
+- **Query execution plan for `join4.sql` was observed to differ across runs and across
+  OFF/ON sessions** (filesort/nested-loop in some runs, hash-join in others) — root
+  cause is RocksDB's own approximate per-CF cardinality estimate drifting under
+  sustained OLTP writes, independent of `ANALYZE TABLE`/histogram freshness (which
+  itself only runs once per session, before Run 1, not per-run). This is a real
+  confound: a worse plan can require examining far more row-pairs than a hash join for
+  the same output, enough on its own to explain why OLAP Run 1 specifically times out
+  every session while Runs 2-5 don't, independent of any offload effect. Fixed 2026-08-01
+  by adding `STRAIGHT_JOIN` to `join4.sql` to pin join order deterministically across
+  every run/session (see the query's own comment for the full reasoning and a note that
+  this pins join *order* only, not join *algorithm* — if flamegraphs still show
+  plan-type flips after this, also pin `optimizer_switch='block_nested_loop=off'`).
+- **Flamegraphs from the RelWithDebInfo build show a large (90-96%) `[unknown]` root
+  frame at address `0xffffffffffffffff` — this is tail-call elimination, not a symbol-
+  resolution failure, and is not fixable via `perf`/`profile-htap.sh` flags.** Confirmed
+  2026-08-01 by directly ruling out, in order: `--no-inline` (the box is one node, not
+  many partially-resolved frames — inconsistent with what `--no-inline` actually does);
+  `kptr_restrict`/`perf_event_paranoid` (both `perf record` and `perf script` already run
+  as root, which bypasses these); missing kernel symbols (`/proc/kallsyms` resolves real
+  kernel-text addresses fine under `sudo`); and the `--call-graph dwarf` default 8192-byte
+  stack-snapshot size (a controlled test with `dwarf,65528` showed an unrelated thread
+  unwinding cleanly to genuine thread-entry code with no sentinel, while the specific call
+  path tested still hit the identical sentinel at wildly varying depths below it — ruling
+  out a fixed size/depth limit). `0xffffffffffffffff` is the canonical "undefined return
+  address register" DWARF-CFI sentinel: when GCC tail-call-optimizes a call, the caller's
+  stack frame is discarded before the callee runs, so there's genuinely nothing left on
+  the real runtime stack to unwind into — not a tooling gap. Far less visible on the old
+  Debug build (`-O0` doesn't perform tail-call elimination). In every case examined so
+  far, the loss occurs at the *outer* dispatch/connection layer (e.g.
+  `mysql_execute_command`/`dispatch_command`), one level above the RocksDB/optimizer/
+  mutex-contention code this project's analysis actually depends on, which resolves fully
+  beneath it — treat as a disclosed methodology caveat, not a reason to distrust the
+  flamegraphs' function-level attribution. Full investigation:
+  `project_flax_integration_status` memory.
