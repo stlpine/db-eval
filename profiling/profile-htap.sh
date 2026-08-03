@@ -716,6 +716,23 @@ for RUN in $(seq 1 "$HTAP_OLAP_RUNS"); do
         [ -z "$innodb_before" ] && log_error "  WARNING: innodb_before snapshot empty"
     fi
 
+    # Capture the plan MySQL would choose for this run, and the RocksDB
+    # LSM/compaction state going into it, BEFORE the timed execution below.
+    # EXPLAIN doesn't execute the query, so this is cheap even though the real
+    # run can take minutes to hours. Captured every run (not just once) because
+    # RocksDB's own live per-CF cardinality estimates drift under concurrent
+    # OLTP writes, and Run 1 has been observed to cost far more than later runs
+    # for reasons not yet root-caused -- see
+    # flax_baremetal_htap_hardened_offload_findings_20260803.md's open items.
+    if [ "$IS_MYROCKS" = "true" ]; then
+        mysql --socket="$SOCKET" "$BENCHMARK_DB" --batch 2>/dev/null > "${RESULT_DIR}/explain_run${RUN}.txt" <<SQL
+SET @htap_cutoff = ${CUTOFF};
+EXPLAIN FORMAT=TREE ${JOIN4_CONTENT}
+SQL
+        mysql --socket="$SOCKET" --batch --skip-column-names 2>/dev/null \
+            -e "SHOW ENGINE ROCKSDB STATUS;" > "${RESULT_DIR}/rocksdb_status_run${RUN}_before.txt"
+    fi
+
     # Start perf record attached to mysqld
     perf_data="${RESULT_DIR}/perf_htap_run${RUN}.data"
     ${BENCH_SUDO-sudo} perf record -F 49 -p "$MYSQLD_PID" --call-graph "${PERF_CALL_GRAPH:-dwarf}" \
@@ -831,6 +848,14 @@ SQL
     end_time=$(date +%s.%N)
     elapsed=$(echo "$end_time - $start_time" | bc)
     PERF_ELAPSED[$RUN]=$elapsed
+
+    # RocksDB LSM/compaction state right after the query -- paired with the
+    # "_before" snapshot above to see how much L0/compaction backlog built up
+    # during this specific run's execution window.
+    if [ "$IS_MYROCKS" = "true" ]; then
+        mysql --socket="$SOCKET" --batch --skip-column-names 2>/dev/null \
+            -e "SHOW ENGINE ROCKSDB STATUS;" > "${RESULT_DIR}/rocksdb_status_run${RUN}_after.txt"
+    fi
 
     # For MyRocks: split raw_output at CTX_SPLIT to get before/after perf context.
     # The ROCKSDB_PERF_CONTEXT table is columnar — column names depend on the build.
