@@ -68,14 +68,28 @@ if [ "$SKIP_PREPARE" = false ]; then
     # dropped-table SST files sitting on disk pending background compaction/
     # GC, adding untracked I/O contention early in the new session, and lets
     # host-level state (e.g. /tmp/nvmevirt_debug.log) accumulate silently
-    # across sessions instead of starting clean. Stop mysqld first --
-    # mount.sh's `umount` fails on a busy device otherwise. Not run as `sudo
-    # bash` (mount.sh already sudo-prefixes its own privileged commands) so
-    # its final `chown -R "$USER":` resolves to the real invoking user, not
-    # root.
+    # across sessions instead of starting clean. Stop mysqld first -- umount
+    # fails on a busy device otherwise.
+    #
+    # Inlines FLAX's own mount.sh (umount/mkfs/mount/chown) instead of calling
+    # it directly, to add -E lazy_itable_init=0,lazy_journal_init=0 to the
+    # mkfs step -- see FLAX/CLAUDE.md gotcha #7. Without this, mkfs.ext4
+    # defers inode-table/journal zeroing to a background ext4lazyinit kernel
+    # thread that mysqld --initialize-insecure can race ahead of, leaving a
+    # freshly-created file (e.g. an InnoDB redo log) pointing at not-yet-
+    # zeroed blocks -- read back as garbage that InnoDB misreports as a
+    # "no keyring configured" decryption failure. Confirmed 2026-08-03: a
+    # plain `mkfs.ext4 -F` (what mount.sh does) hit this on 2 of 3 fresh-init
+    # attempts; forcing synchronous (non-lazy) init here avoids the race
+    # instead of just reformatting and hoping. Kept in db-eval rather than
+    # editing FLAX/src/mount.sh, per explicit preference to keep the FLAX
+    # repo's own diff at zero -- see feedback_minimal_flax_footprint memory.
     log_info "Wiping NVMeVirt-backed filesystem for a clean session..."
     bash "${SCRIPT_DIR}/mysql-control.sh" percona-myrocks-nvmevirt stop 2>/dev/null || true
-    bash "$HOME/flax-scratch/repos/FLAX/src/mount.sh" || { log_error "mount.sh wipe failed"; exit 1; }
+    sudo umount /mnt/nvme 2>/dev/null
+    sudo mkfs.ext4 -F -E lazy_itable_init=0,lazy_journal_init=0 "${SSD_DEVICE}" || { log_error "mkfs wipe failed"; exit 1; }
+    sudo mount "${SSD_DEVICE}" /mnt/nvme || { log_error "mount failed"; exit 1; }
+    sudo chown -R "$USER": /mnt/nvme
 
     if [ ! -d "${MYSQL_DATADIR_PERCONA_MYROCKS_NVMEVIRT}" ]; then
         log_info "Datadir missing — initializing..."

@@ -271,12 +271,20 @@ deployment environments, each with its own env-override file, both hooked into
   `--initialize-insecure`) before the next `ANALYZE TABLE` runs — there is no way to
   keep a long-lived FLAX datadir across many profiling sessions without eventually
   hitting this.
-- **On `s1` specifically, a plain `rm -rf $DATADIR` was not always sufficient to
-  recover** even after the above — `mysqld` failed to start afterward with an `InnoDB`
-  redo-log decryption error (`no keyring configured`, a red herring — nothing was
-  actually encrypted). Re-running FLAX's own `src/mount.sh` (a real `mkfs.ext4 -F` on
-  the underlying NVMeVirt-backed device, not just deleting files on top of it) resolved
-  it. Suspected RAM-backed-filesystem-specific quirk, not fully root-caused.
+- **Root-caused 2026-08-03 (previously just worked around): plain `rm -rf $DATADIR`,
+  and even a bare `mkfs.ext4 -F` reformat, are not reliably sufficient to avoid a
+  spurious `InnoDB` redo-log "decryption" abort on the next `mysqld` startup**
+  (`no keyring configured` — a red herring, nothing is actually encrypted). Root cause:
+  `mkfs.ext4` defers inode-table/journal zeroing to a background `ext4lazyinit` kernel
+  thread that runs *after* mount, not during `mkfs` itself — `mysqld
+  --initialize-insecure` (which starts almost immediately after `mount.sh`) can race
+  ahead of it and allocate a file (e.g. an InnoDB redo log) into a not-yet-zeroed
+  region, which reads back as garbage InnoDB misreports as encrypted. Explains why this
+  was previously seen as intermittent/"not fully root-caused" (a genuine race, not a
+  deterministic bug) and why a full-device `dd if=/dev/zero` reliably masked it (every
+  block already zero, independent of `ext4lazyinit` timing). **Fix**: see the
+  `run-flax-baremetal-htap.sh` bullet below — forces synchronous inode/journal init
+  instead. Full root-cause writeup: `FLAX/CLAUDE.md` gotcha #7.
 - **`env-flax-baremetal.sh`'s `check_ssd_device`/`check_ssd_mount` are real safety
   checks** (unlike the sandbox's blind no-op stubs) — they resolve the NVMeVirt device
   via its stable `/dev/disk/by-id/nvme-CSL_Virt_MN_01_CSL_Virt_SN_01` alias and verify
@@ -332,21 +340,27 @@ deployment environments, each with its own env-override file, both hooked into
   history with the current run's own (tiny) output at the tail. Truncate before trusting
   any log-volume-based read on this file: `sudo truncate -s 0 /tmp/nvmevirt_debug.log`.
 - **`run-flax-baremetal-htap.sh`'s Phase 1 (non-`--skip-prepare`) now does a full
-  physical wipe of `/mnt/nvme` via FLAX's `src/mount.sh` before every independent
-  session**, added 2026-08-01, on top of `prepare.sh`'s own logical `DROP DATABASE`.
-  The logical drop alone was already sufficient for data *correctness* between sessions
-  (confirmed by reading `sysbench-htap/prepare.sh:63`) — the physical wipe is purely for
-  cleanliness: without it, a reused datadir directory leaves the previous session's
-  dropped-table SSTs on disk pending background compaction/GC (minor extra I/O
-  contention early in the new session), separate from and not fully explaining the
-  `nvmevirt_debug.log` accumulation issue above (that log lives outside `/mnt/nvme`
-  entirely and isn't touched by this wipe — truncate it separately). The wipe
-  intentionally does **not** run under `--skip-prepare` (defeats the purpose of that
-  flag, which exists specifically to reuse already-prepared data), and stops any
-  running `mysqld` first since `mount.sh`'s `umount` fails on a busy device — this only
-  stops the engine's own tracked instance (`mysql-control.sh ... stop`), not any
-  manually-started `mysqld` (e.g. a `verify.sh` correctness-test instance) using a
-  different datadir/socket; stop those separately first.
+  physical wipe of `/mnt/nvme` before every independent session**, added 2026-08-01, on
+  top of `prepare.sh`'s own logical `DROP DATABASE`. The logical drop alone was already
+  sufficient for data *correctness* between sessions (confirmed by reading
+  `sysbench-htap/prepare.sh:63`) — the physical wipe is purely for cleanliness: without
+  it, a reused datadir directory leaves the previous session's dropped-table SSTs on
+  disk pending background compaction/GC (minor extra I/O contention early in the new
+  session), separate from and not fully explaining the `nvmevirt_debug.log`
+  accumulation issue above (that log lives outside `/mnt/nvme` entirely and isn't
+  touched by this wipe — truncate it separately). The wipe intentionally does **not**
+  run under `--skip-prepare` (defeats the purpose of that flag, which exists
+  specifically to reuse already-prepared data), and stops any running `mysqld` first
+  since `umount` fails on a busy device — this only stops the engine's own tracked
+  instance (`mysql-control.sh ... stop`), not any manually-started `mysqld` (e.g. a
+  `verify.sh` correctness-test instance) using a different datadir/socket; stop those
+  separately first.
+  **Updated 2026-08-03**: this step no longer shells out to FLAX's own `src/mount.sh` —
+  it inlines the same `umount`/`mkfs.ext4 -F`/`mount`/`chown` sequence directly, with
+  `-E lazy_itable_init=0,lazy_journal_init=0` added to the `mkfs.ext4` call (root-cause
+  fix for the redo-log-decryption gotcha above). Kept in `db-eval` rather than editing
+  `FLAX/src/mount.sh` itself, per `feedback_minimal_flax_footprint` — anything outside
+  `db-eval` that calls FLAX's own `mount.sh` directly is still exposed to the race.
 - **Query execution plan for `join4.sql` was observed to differ across runs and across
   OFF/ON sessions** (filesort/nested-loop in some runs, hash-join in others) — root
   cause is RocksDB's own approximate per-CF cardinality estimate drifting under

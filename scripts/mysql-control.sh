@@ -112,7 +112,7 @@ case $ENGINE in
         PID_FILE="${MYSQL_PID_PERCONA_MYROCKS_NVMEVIRT}"
         # Raw build tree, not an installed prefix -- see
         # my-percona-myrocks-nvmevirt-sandbox.cnf's header comment.
-        MYSQLD_BIN="${FLAX_PS_BUILD_DIR:?FLAX_PS_BUILD_DIR not set -- source env-flax-sandbox.sh via FLAX_SANDBOX_ENV}/runtime_output_directory/mysqld"
+        MYSQLD_BIN="${FLAX_PS_BUILD_DIR:?FLAX_PS_BUILD_DIR not set -- export FLAX_SANDBOX_ENV (QEMU sandbox) or FLAX_BAREMETAL_ENV (bare metal) to the matching env-flax-*.sh's absolute path before sourcing env.sh}/runtime_output_directory/mysqld"
         CONFIG_FILE="${MYSQL_NVMEVIRT_CONFIG_OVERRIDE:-${SCRIPT_DIR}/../common/config/my-percona-myrocks-nvmevirt-sandbox.cnf}"
         ;;
     *)
