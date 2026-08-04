@@ -72,21 +72,42 @@ if [ "$SKIP_PREPARE" = false ]; then
     # fails on a busy device otherwise.
     #
     # Inlines FLAX's own mount.sh (umount/mkfs/mount/chown) instead of calling
-    # it directly, to add -E lazy_itable_init=0,lazy_journal_init=0 to the
-    # mkfs step -- see FLAX/CLAUDE.md gotcha #7. Without this, mkfs.ext4
-    # defers inode-table/journal zeroing to a background ext4lazyinit kernel
-    # thread that mysqld --initialize-insecure can race ahead of, leaving a
-    # freshly-created file (e.g. an InnoDB redo log) pointing at not-yet-
-    # zeroed blocks -- read back as garbage that InnoDB misreports as a
-    # "no keyring configured" decryption failure. Confirmed 2026-08-03: a
-    # plain `mkfs.ext4 -F` (what mount.sh does) hit this on 2 of 3 fresh-init
-    # attempts; forcing synchronous (non-lazy) init here avoids the race
-    # instead of just reformatting and hoping. Kept in db-eval rather than
-    # editing FLAX/src/mount.sh, per explicit preference to keep the FLAX
-    # repo's own diff at zero -- see feedback_minimal_flax_footprint memory.
+    # it directly -- see FLAX/CLAUDE.md gotcha #7 for the full history. Kept in
+    # db-eval rather than editing FLAX/src/mount.sh, per explicit preference to
+    # keep the FLAX repo's own diff at zero -- see feedback_minimal_flax_footprint
+    # memory.
+    #
+    # A full `dd if=/dev/zero` wipe of the raw block device, BEFORE mkfs, is
+    # required here. Root cause confirmed 2026-08-04 by reading FLAX's own
+    # src/main.c: NVMEV_STORAGE_INIT() explicitly memset()s the SLM region to
+    # zero on module load but never does the same for storage_mapped (the
+    # region this filesystem sits on) -- whatever physical DRAM content was
+    # already in that memmap= reservation stays there until something
+    # actually writes over it. On bare metal that's real, persistent host
+    # DRAM with an uncontrolled history across this project's many kernel
+    # rebuilds/module reloads; harmless in the QEMU sandbox variant only
+    # because a fresh guest's own memmap= region happens to be backed by the
+    # host kernel's zero-filled anonymous pages, not because of anything
+    # NVMeVirt itself guarantees. The earlier attempted fix (-E
+    # lazy_itable_init=0,lazy_journal_init=0 on mkfs alone, no dd) is NOT
+    # reliable -- it only affects inode-table/journal zeroing, not regular
+    # file data blocks, and the redo-log-decrypt crash this whole chain
+    # produces recurred at the identical offset even with those flags in
+    # place. A full zero-fill sidesteps the actual gap directly and is the
+    # only approach confirmed reliable so far. Costs ~7 minutes for this
+    # device's ~225GB at observed 500-770MB/s -- real but acceptable against
+    # losing an entire multi-hour session to a crash. The proper permanent
+    # fix is one missing `memset(vdev->storage_mapped, 0,
+    # vdev->config.storage_size);` in FLAX's own NVMEV_STORAGE_INIT() --
+    # deliberately not applied here, per the zero-FLAX-diff preference above;
+    # revisit if this per-session cost ever becomes a real problem. Keeping
+    # the mkfs flags too since they don't hurt and may still help some other
+    # case.
     log_info "Wiping NVMeVirt-backed filesystem for a clean session..."
     bash "${SCRIPT_DIR}/mysql-control.sh" percona-myrocks-nvmevirt stop 2>/dev/null || true
     sudo umount /mnt/nvme 2>/dev/null
+    log_info "Zero-filling ${SSD_DEVICE} before reformat (~7 min, avoids a known intermittent startup crash)..."
+    sudo dd if=/dev/zero of="${SSD_DEVICE}" bs=1M status=progress || true
     sudo mkfs.ext4 -F -E lazy_itable_init=0,lazy_journal_init=0 "${SSD_DEVICE}" || { log_error "mkfs wipe failed"; exit 1; }
     sudo mount "${SSD_DEVICE}" /mnt/nvme || { log_error "mount failed"; exit 1; }
     sudo chown -R "$USER": /mnt/nvme
