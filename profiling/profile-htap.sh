@@ -203,6 +203,67 @@ snapshot_perf_context_global() {
     fi
 }
 
+# get_effective_memory_limit: read the ACTUAL cgroup v2 memory.max for a given
+# PID (default: this script's own process), not the CGROUP_MEMORY_LIMIT env
+# default -- the two can differ. Added 2026-08-06: run-flax-baremetal-htap.sh
+# invokes this script as plain `sudo -E bash`, never `cgexec`, so FLAX
+# bare-metal HTAP runs have never actually been memory-limited despite
+# profiling_config.log previously echoing the env.sh default (16G) verbatim,
+# implying otherwise. This reads ground truth from /proc + /sys/fs/cgroup so
+# the log is correct regardless of how the script was invoked. See
+# db-eval/CLAUDE.md's join4.sql plan-drift gotcha and
+# flax_baremetal_htap_hardened_offload_findings_20260803.md for the
+# still-open Run 1/Run 3 investigation this supports.
+get_effective_memory_limit() {
+    local pid="${1:-self}"
+    local cg_path
+    cg_path=$(${BENCH_SUDO-sudo} awk -F: '$1=="0"{print $3}' "/proc/${pid}/cgroup" 2>/dev/null)
+    if [ -z "$cg_path" ]; then
+        echo "unknown (could not read /proc/${pid}/cgroup)"
+        return
+    fi
+    local mem_max_file="/sys/fs/cgroup${cg_path}/memory.max"
+    if [ ! -f "$mem_max_file" ]; then
+        echo "no memory controller active at cgroup=${cg_path} (unconstrained)"
+        return
+    fi
+    local val
+    val=$(${BENCH_SUDO-sudo} cat "$mem_max_file" 2>/dev/null)
+    if [ "$val" = "max" ]; then
+        echo "unlimited (cgroup=${cg_path}, memory.max=max)"
+    else
+        awk -v b="$val" -v p="$cg_path" 'BEGIN{printf "%.2f GB (cgroup=%s)\n", b/1024/1024/1024, p}'
+    fi
+}
+
+# snapshot_memory_state: host + mysqld memory usage, paired before/after each
+# OLAP run -- same pattern as the rocksdb_status_run<N>_{before,after}.txt
+# LSM-state snapshots. Added 2026-08-06 to check whether real memory pressure
+# (page cache eviction, mysqld RSS growth, actual cgroup throttling) plays any
+# role in the still-open Run 1/Run 3 cost anomaly, now that the
+# CGROUP_MEMORY_LIMIT log line can no longer be trusted to reflect reality
+# (see get_effective_memory_limit above). Cheap (/proc + /sys reads only, no
+# workload impact).
+snapshot_memory_state() {
+    local out_file=$1
+    {
+        echo "=== free -h ==="
+        free -h 2>/dev/null
+        echo ""
+        echo "=== mysqld memory (PID ${MYSQLD_PID}) ==="
+        ${BENCH_SUDO-sudo} awk '/^Vm(RSS|Size|Swap|HWM):/' "/proc/${MYSQLD_PID}/status" 2>/dev/null
+        echo ""
+        echo "=== effective cgroup memory limit (mysqld) ==="
+        get_effective_memory_limit "$MYSQLD_PID"
+        local cg_path cur_file
+        cg_path=$(${BENCH_SUDO-sudo} awk -F: '$1=="0"{print $3}' "/proc/${MYSQLD_PID}/cgroup" 2>/dev/null)
+        cur_file="/sys/fs/cgroup${cg_path}/memory.current"
+        if [ -n "$cg_path" ] && [ -f "$cur_file" ]; then
+            ${BENCH_SUDO-sudo} awk '{printf "current usage: %.2f GB\n", $1/1024/1024/1024}' "$cur_file" 2>/dev/null
+        fi
+    } > "$out_file" 2>&1
+}
+
 # ── Preflight ─────────────────────────────────────────────────────────────────
 
 log_info "=========================================="
@@ -441,7 +502,8 @@ CONFIG_LOG="${RESULT_DIR}/profiling_config.log"
     echo "HTAP_OLAP_RUNS: $HTAP_OLAP_RUNS"
     echo "CUTOFF: $CUTOFF"
     echo "BENCHMARK_DB: $BENCHMARK_DB"
-    echo "CGROUP_MEMORY_LIMIT: $CGROUP_MEMORY_LIMIT"
+    echo "CGROUP_MEMORY_LIMIT (env.sh default -- NOT necessarily enforced, see next line): $CGROUP_MEMORY_LIMIT"
+    echo "Effective cgroup memory limit (actual, this process): $(get_effective_memory_limit self)"
     echo "FLAMEGRAPH_DIR: $FLAMEGRAPH_DIR"
     echo "PERF_EVENT: ${PERF_EVENT}"
     echo "PERF_FREQ: 49 Hz"
@@ -733,6 +795,10 @@ SQL
             -e "SHOW ENGINE ROCKSDB STATUS;" > "${RESULT_DIR}/rocksdb_status_run${RUN}_before.txt"
     fi
 
+    # Memory snapshot going into this run -- see snapshot_memory_state's own
+    # comment for why (untested variable in the Run 1/Run 3 investigation).
+    snapshot_memory_state "${RESULT_DIR}/memory_run${RUN}_before.txt"
+
     # Start perf record attached to mysqld
     perf_data="${RESULT_DIR}/perf_htap_run${RUN}.data"
     ${BENCH_SUDO-sudo} perf record -F 49 -p "$MYSQLD_PID" --call-graph "${PERF_CALL_GRAPH:-dwarf}" \
@@ -856,6 +922,11 @@ SQL
         mysql --socket="$SOCKET" --batch --skip-column-names 2>/dev/null \
             -e "SHOW ENGINE ROCKSDB STATUS;" > "${RESULT_DIR}/rocksdb_status_run${RUN}_after.txt"
     fi
+
+    # Memory snapshot right after the query -- paired with the "_before" one
+    # above to see how much mysqld RSS/page-cache/cgroup usage grew during
+    # this specific run's execution window.
+    snapshot_memory_state "${RESULT_DIR}/memory_run${RUN}_after.txt"
 
     # For MyRocks: split raw_output at CTX_SPLIT to get before/after perf context.
     # The ROCKSDB_PERF_CONTEXT table is columnar — column names depend on the build.
@@ -1110,6 +1181,7 @@ log_info "  OLAP runs CSV    : ${RESULT_DIR}/htap_olap_runs.csv"
 log_info "  Version growth   : ${RESULT_DIR}/htap_version_growth.csv"
 log_info "  Flamegraphs      : ${RESULT_DIR}/flamegraph_htap_run*.svg"
 log_info "  OLTP log         : ${RESULT_DIR}/sysbench_htap_oltp.txt"
+log_info "  Memory snapshots : ${RESULT_DIR}/memory_run*_{before,after}.txt"
 log_info "  Resource summary : ${RESULT_DIR}/profiling_htap_resource_summary.csv"
 log_info "  mysqld error log : ${RESULT_DIR}/mysqld_error.log"
 log_info "=========================================="

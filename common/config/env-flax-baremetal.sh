@@ -18,6 +18,22 @@
 # starved of cores on the original host relative to what a comparison host
 # had). See CPU/NUMA topology notes in FLAX/src/init_nvmev.sh and perf.sh.
 
+# --- Cgroup memory limit (deliberately separate from env.sh's CGROUP_NAME/
+# CGROUP_MEMORY_LIMIT, which is the CEMU thread's own 16G cgroup on a
+# different host -- never blindly reuse that number here, see
+# feedback_dont_overreference_cemu memory).
+#
+# FLAX_CGROUP_MEMORY_LIMIT is intentionally left EMPTY until sized from real
+# calibration data: run one FLAX bare-metal HTAP session unconstrained first
+# (the memory_run<N>_{before,after}.txt snapshots profile-htap.sh already
+# captures per run), read the peak mysqld RSS / free-memory drop from those,
+# then set a limit here with headroom above that peak -- not a guess, and not
+# a number borrowed from the CEMU thread's own comparison. setup-cgroup-flax.sh
+# refuses to run while this is empty; run-flax-baremetal-htap.sh's
+# --with-cgroup flag refuses to enable the cgroup while this is empty.
+export FLAX_CGROUP_NAME="flax_memory_group"
+export FLAX_CGROUP_MEMORY_LIMIT=""
+
 # --- Percona Server build tree (raw build dir, not an installed prefix) ---
 export FLAX_PS_BUILD_DIR="$HOME/flax-scratch/repos/percona-server/build"
 export PATH="${FLAX_PS_BUILD_DIR}/runtime_output_directory:${PATH}"

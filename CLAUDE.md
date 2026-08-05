@@ -271,20 +271,28 @@ deployment environments, each with its own env-override file, both hooked into
   `--initialize-insecure`) before the next `ANALYZE TABLE` runs — there is no way to
   keep a long-lived FLAX datadir across many profiling sessions without eventually
   hitting this.
-- **Root-caused 2026-08-03 (previously just worked around): plain `rm -rf $DATADIR`,
-  and even a bare `mkfs.ext4 -F` reformat, are not reliably sufficient to avoid a
-  spurious `InnoDB` redo-log "decryption" abort on the next `mysqld` startup**
-  (`no keyring configured` — a red herring, nothing is actually encrypted). Root cause:
-  `mkfs.ext4` defers inode-table/journal zeroing to a background `ext4lazyinit` kernel
-  thread that runs *after* mount, not during `mkfs` itself — `mysqld
-  --initialize-insecure` (which starts almost immediately after `mount.sh`) can race
-  ahead of it and allocate a file (e.g. an InnoDB redo log) into a not-yet-zeroed
-  region, which reads back as garbage InnoDB misreports as encrypted. Explains why this
-  was previously seen as intermittent/"not fully root-caused" (a genuine race, not a
-  deterministic bug) and why a full-device `dd if=/dev/zero` reliably masked it (every
-  block already zero, independent of `ext4lazyinit` timing). **Fix**: see the
-  `run-flax-baremetal-htap.sh` bullet below — forces synchronous inode/journal init
-  instead. Full root-cause writeup: `FLAX/CLAUDE.md` gotcha #7.
+- **Root-caused 2026-08-04 (an earlier 2026-08-03 diagnosis was wrong): plain
+  `rm -rf $DATADIR`, and even a bare `mkfs.ext4 -F` reformat, are not reliably
+  sufficient to avoid a spurious `InnoDB` redo-log "decryption" abort on the next
+  `mysqld` startup** (`no keyring configured` — a red herring, nothing is actually
+  encrypted; always the identical offset, `2610176` in `#ib_redo5`, when it recurs).
+  **Actual root cause** (confirmed in FLAX's own `src/main.c`): `NVMEV_STORAGE_INIT()`
+  zeroes the SLM region on module load but never zeroes `storage_mapped` (the region
+  the filesystem sits on) — leftover physical DRAM content from the host's
+  `memmap=` reservation persists until something writes over it. Bare-metal-specific
+  because that reservation is real, persistent host DRAM with an uncontrolled history
+  across many kernel rebuilds/module reloads; not hit in the QEMU sandbox only because
+  a fresh guest's own reserved region happens to be backed by the host kernel's
+  zero-filled anonymous pages, not because of any guarantee NVMeVirt itself makes. An
+  earlier fix attempt (`mkfs.ext4 -E lazy_itable_init=0,lazy_journal_init=0`, no
+  zero-fill) looked sufficient once but is **not reliable** — it only affects ext4's
+  inode-table/journal zeroing, not regular file data blocks, and the crash recurred
+  identically with those flags in place. **Fix**: see the `run-flax-baremetal-htap.sh`
+  bullet below — a full `dd if=/dev/zero` wipe before `mkfs`, which actually
+  eliminates the gap rather than working around an unrelated ext4 behavior. The
+  correct permanent fix is one missing `memset()` call in FLAX's own source,
+  deliberately not applied per the zero-FLAX-diff preference. Full root-cause
+  writeup: `FLAX/CLAUDE.md` gotcha #7.
 - **`env-flax-baremetal.sh`'s `check_ssd_device`/`check_ssd_mount` are real safety
   checks** (unlike the sandbox's blind no-op stubs) — they resolve the NVMeVirt device
   via its stable `/dev/disk/by-id/nvme-CSL_Virt_MN_01_CSL_Virt_SN_01` alias and verify
@@ -355,24 +363,40 @@ deployment environments, each with its own env-override file, both hooked into
   instance (`mysql-control.sh ... stop`), not any manually-started `mysqld` (e.g. a
   `verify.sh` correctness-test instance) using a different datadir/socket; stop those
   separately first.
-  **Updated 2026-08-03**: this step no longer shells out to FLAX's own `src/mount.sh` —
-  it inlines the same `umount`/`mkfs.ext4 -F`/`mount`/`chown` sequence directly, with
-  `-E lazy_itable_init=0,lazy_journal_init=0` added to the `mkfs.ext4` call (root-cause
-  fix for the redo-log-decryption gotcha above). Kept in `db-eval` rather than editing
-  `FLAX/src/mount.sh` itself, per `feedback_minimal_flax_footprint` — anything outside
-  `db-eval` that calls FLAX's own `mount.sh` directly is still exposed to the race.
-- **Query execution plan for `join4.sql` was observed to differ across runs and across
-  OFF/ON sessions** (filesort/nested-loop in some runs, hash-join in others) — root
-  cause is RocksDB's own approximate per-CF cardinality estimate drifting under
-  sustained OLTP writes, independent of `ANALYZE TABLE`/histogram freshness (which
-  itself only runs once per session, before Run 1, not per-run). This is a real
-  confound: a worse plan can require examining far more row-pairs than a hash join for
-  the same output, enough on its own to explain why OLAP Run 1 specifically times out
-  every session while Runs 2-5 don't, independent of any offload effect. Fixed 2026-08-01
-  by adding `STRAIGHT_JOIN` to `join4.sql` to pin join order deterministically across
-  every run/session (see the query's own comment for the full reasoning and a note that
-  this pins join *order* only, not join *algorithm* — if flamegraphs still show
-  plan-type flips after this, also pin `optimizer_switch='block_nested_loop=off'`).
+  **Updated 2026-08-03, corrected 2026-08-04**: this step no longer shells out to
+  FLAX's own `src/mount.sh` — it inlines the same `umount`/`mkfs.ext4 -F`/`mount`/
+  `chown` sequence directly, with a `sudo dd if=/dev/zero` wipe of the raw device added
+  before `mkfs` (the actually-reliable fix for the redo-log-decryption gotcha above;
+  the `lazy_itable_init`/`lazy_journal_init` mkfs flags from the first attempt are kept
+  too since they don't hurt, but are not load-bearing). Costs ~7 minutes per session.
+  Kept in `db-eval` rather than editing `FLAX/src/main.c`'s missing `memset()`, per
+  `feedback_minimal_flax_footprint` — anything outside `db-eval` that calls FLAX's own
+  `mount.sh` (or loads `nvmev.ko` at all, on bare metal) is still exposed to this.
+- **Query execution plan for `join4.sql` was originally suspected to differ across runs
+  and across OFF/ON sessions** (filesort/nested-loop in some runs, hash-join in others) —
+  hypothesized root cause was RocksDB's own approximate per-CF cardinality estimate
+  drifting under sustained OLTP writes, independent of `ANALYZE TABLE`/histogram
+  freshness (which itself only runs once per session, before Run 1, not per-run).
+  Suspected as a real confound: a worse plan can require examining far more row-pairs
+  than a hash join for the same output, which looked like it could on its own explain why
+  OLAP Run 1 specifically times out every session while Runs 2-5 don't, independent of
+  any offload effect. `STRAIGHT_JOIN` was added to `join4.sql` on 2026-08-01 to pin join
+  order deterministically across every run/session (see the query's own comment; note it
+  pins join *order* only, not join *algorithm*).
+  **Ruled out 2026-08-04/05**: Run 1 still timed out at the 7200s ceiling in both the
+  2026-08-03 and 2026-08-04/05 session pairs even with `STRAIGHT_JOIN` applied. Live
+  `EXPLAIN FORMAT=TREE` captured per run (via `profile-htap.sh` instrumentation) showed
+  the plan shape is actually **identical across all 5 runs** — same join order, always
+  hash joins, never nested-loop/filesort — and the optimizer's row-count estimates don't
+  correlate with actual run cost (e.g. the run with the highest estimate was cheap; a run
+  with one of the lowest estimates was the most expensive). Plan drift is **not** the
+  cause of Run 1's timeout. Four other mechanisms were also checked and ruled out (L0
+  backlog, OS page cache, active compaction, hash-join disk spill) — the real cause is
+  still open as of this writing; see the "Run 1/Run 3 anomaly" section of
+  `flax_baremetal_htap_hardened_offload_findings_20260803.md` for the full investigation.
+  `optimizer_switch='block_nested_loop=off'` is still unapplied and untried as a next
+  step, but the EXPLAIN evidence already shows no nested-loop plans occurring, so it's
+  unlikely to be the fix.
 - **Flamegraphs from the RelWithDebInfo build show a large (90-96%) `[unknown]` root
   frame at address `0xffffffffffffffff` — this is tail-call elimination, not a symbol-
   resolution failure, and is not fixable via `perf`/`profile-htap.sh` flags.** Confirmed

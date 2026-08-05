@@ -5,12 +5,18 @@
 # equivalent (scaled-down first pass this bare-metal run supersedes).
 #
 # Usage:
-#   bash run-flax-baremetal-htap.sh [--skip-prepare] [--cutoff <n>]
+#   bash run-flax-baremetal-htap.sh [--skip-prepare] [--cutoff <n>] [--with-cgroup]
 #
 # Examples:
 #   bash run-flax-baremetal-htap.sh                  # prepare data + run profiling
 #   bash run-flax-baremetal-htap.sh --skip-prepare   # skip data prep (data already loaded)
 #   bash run-flax-baremetal-htap.sh --cutoff 90000
+#   bash run-flax-baremetal-htap.sh --with-cgroup    # apply FLAX_CGROUP_MEMORY_LIMIT
+#                                                     # (env-flax-baremetal.sh) -- requires
+#                                                     # that value to be sized first from a
+#                                                     # real unconstrained session's
+#                                                     # memory_run<N>_*.txt files, and
+#                                                     # ./scripts/setup-cgroup-flax.sh run once
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -20,14 +26,37 @@ source "${SCRIPT_DIR}/../common/config/env.sh"
 
 SKIP_PREPARE=false
 CUTOFF="${HTAP_JOIN_CUTOFF}"
+WITH_CGROUP=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-prepare) SKIP_PREPARE=true; shift ;;
         --cutoff) CUTOFF="$2"; shift 2 ;;
+        --with-cgroup) WITH_CGROUP=true; shift ;;
         *) log_error "Unknown option: $1"; exit 1 ;;
     esac
 done
+
+# --with-cgroup: opt-in only, and only usable once FLAX_CGROUP_MEMORY_LIMIT
+# has been sized from real calibration data (see env-flax-baremetal.sh's own
+# comment) -- refuse rather than silently running unconstrained OR silently
+# picking an unvalidated number. Without this flag (the default), behavior is
+# unchanged from before: plain `sudo -E bash`, no cgroup, fully unconstrained.
+if [ "$WITH_CGROUP" = "true" ]; then
+    if [ -z "${FLAX_CGROUP_MEMORY_LIMIT}" ]; then
+        log_error "--with-cgroup passed but FLAX_CGROUP_MEMORY_LIMIT is empty."
+        log_error "This must be sized from real calibration data first -- run once"
+        log_error "without --with-cgroup, check memory_run<N>_{before,after}.txt for"
+        log_error "peak usage, then set FLAX_CGROUP_MEMORY_LIMIT in env-flax-baremetal.sh."
+        exit 1
+    fi
+    CGROUP_CHECK_PATH="/sys/fs/cgroup/${FLAX_CGROUP_NAME}"
+    if [ ! -d "$CGROUP_CHECK_PATH" ]; then
+        log_error "--with-cgroup passed but cgroup '${FLAX_CGROUP_NAME}' does not exist."
+        log_error "Run ./scripts/setup-cgroup-flax.sh first."
+        exit 1
+    fi
+fi
 
 log_info "=========================================="
 log_info "HTAP Profiling — FLAX bare metal (percona-myrocks-nvmevirt)"
@@ -42,6 +71,11 @@ log_info "OLTP threads : ${HTAP_OLTP_THREADS}"
 log_info "LLT count    : ${HTAP_LLT_COUNT}"
 log_info "Query timeout: ${HTAP_QUERY_TIMEOUT}s"
 log_info "Skip prepare : ${SKIP_PREPARE}"
+if [ "$WITH_CGROUP" = "true" ]; then
+    log_info "Memory limit : ${FLAX_CGROUP_MEMORY_LIMIT} (cgroup: ${FLAX_CGROUP_NAME})"
+else
+    log_info "Memory limit : none (unconstrained; pass --with-cgroup once sized to enable)"
+fi
 log_info "=========================================="
 
 mkdir -p "${RESULTS_DIR}"
@@ -152,7 +186,13 @@ log_info "Phase 2: Running HTAP profiling..."
 # aborted an entire run before any OLAP query executed. -E preserves the
 # calling shell's exported SOCKET/HTAP_*/etc. variables, which plain sudo
 # would otherwise reset along with $HOME.
-sudo -E bash "${SCRIPT_DIR}/../profiling/profile-htap.sh" "$CUTOFF" "" percona-myrocks-nvmevirt
+if [ "$WITH_CGROUP" = "true" ]; then
+    log_info "Running under cgroup memory limit: ${FLAX_CGROUP_MEMORY_LIMIT} (${FLAX_CGROUP_NAME})"
+    sudo -E cgexec -g memory:"${FLAX_CGROUP_NAME}" \
+        bash "${SCRIPT_DIR}/../profiling/profile-htap.sh" "$CUTOFF" "" percona-myrocks-nvmevirt
+else
+    sudo -E bash "${SCRIPT_DIR}/../profiling/profile-htap.sh" "$CUTOFF" "" percona-myrocks-nvmevirt
+fi
 
 log_info "=========================================="
 log_info "FLAX bare-metal HTAP profiling complete"
