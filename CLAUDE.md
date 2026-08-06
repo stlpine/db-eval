@@ -372,6 +372,20 @@ deployment environments, each with its own env-override file, both hooked into
   Kept in `db-eval` rather than editing `FLAX/src/main.c`'s missing `memset()`, per
   `feedback_minimal_flax_footprint` — anything outside `db-eval` that calls FLAX's own
   `mount.sh` (or loads `nvmev.ko` at all, on bare metal) is still exposed to this.
+  **Updated 2026-08-06**: the `sudo umount /mnt/nvme 2>/dev/null` before the zero-fill
+  never checked its own exit status. Confirmed on `star1`: `mysql-control.sh`'s
+  force-kill fallback (`sudo kill -9`, fires when mysqld doesn't shut down gracefully
+  within 30s) doesn't guarantee the kernel has released every handle on `/mnt/nvme` by
+  the time this line runs — a single `umount` attempt lost that race, failed silently,
+  and the script went on to `dd if=/dev/zero` a still-mounted, live filesystem before
+  failing loudly and late at the `mkfs` step ("is mounted; will not make a filesystem
+  here!"). Fixed: `umount` is now retried for up to 10s with `mountpoint -q` verifying
+  success, and the script hard-aborts before the zero-fill if still mounted, instead of
+  ever writing to a mounted device. Separately, that same force-kill's `sudo kill -9` is
+  also the first `sudo` call the *whole script* makes when Phase 1's graceful shutdown
+  times out — if the script is invoked without the outer `sudo -E` wrapper (see
+  `feedback_sudo_credential_caching_unattended_runs` memory), this specific call is
+  where an unattended run can hang overnight on a password prompt.
 - **Query execution plan for `join4.sql` was originally suspected to differ across runs
   and across OFF/ON sessions** (filesort/nested-loop in some runs, hash-join in others) —
   hypothesized root cause was RocksDB's own approximate per-CF cardinality estimate

@@ -139,7 +139,26 @@ if [ "$SKIP_PREPARE" = false ]; then
     # case.
     log_info "Wiping NVMeVirt-backed filesystem for a clean session..."
     bash "${SCRIPT_DIR}/mysql-control.sh" percona-myrocks-nvmevirt stop 2>/dev/null || true
-    sudo umount /mnt/nvme 2>/dev/null
+    # Unmount with a verified retry loop rather than a fire-and-forget
+    # `sudo umount ... 2>/dev/null`. Confirmed 2026-08-06: mysql-control.sh's
+    # force-kill fallback (`sudo kill -9`, triggered when mysqld doesn't
+    # shut down gracefully within its 30s window) doesn't guarantee the
+    # kernel has released every handle on /mnt/nvme by the time this line
+    # runs. A single umount attempt lost that race, failed silently (stderr
+    # discarded), and the script then zero-filled and tried to mkfs a
+    # still-mounted, live filesystem -- corrupting it mid-wipe and only
+    # failing loudly, 7 minutes later, at the mkfs step. Never write to the
+    # device until umount is actually confirmed.
+    if mountpoint -q /mnt/nvme; then
+        for i in $(seq 1 10); do
+            sudo umount /mnt/nvme 2>/dev/null && break
+            sleep 1
+        done
+        if mountpoint -q /mnt/nvme; then
+            log_error "/mnt/nvme still mounted after stopping mysqld and retrying umount for 10s -- refusing to zero-fill a live filesystem. Check what's holding it open (sudo fuser -vm /mnt/nvme) and retry."
+            exit 1
+        fi
+    fi
     log_info "Zero-filling ${SSD_DEVICE} before reformat (~7 min, avoids a known intermittent startup crash)..."
     sudo dd if=/dev/zero of="${SSD_DEVICE}" bs=1M status=progress || true
     sudo mkfs.ext4 -F -E lazy_itable_init=0,lazy_journal_init=0 "${SSD_DEVICE}" || { log_error "mkfs wipe failed"; exit 1; }
