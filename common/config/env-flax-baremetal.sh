@@ -23,16 +23,19 @@
 # different host -- never blindly reuse that number here, see
 # feedback_dont_overreference_cemu memory).
 #
-# FLAX_CGROUP_MEMORY_LIMIT is intentionally left EMPTY until sized from real
-# calibration data: run one FLAX bare-metal HTAP session unconstrained first
-# (the memory_run<N>_{before,after}.txt snapshots profile-htap.sh already
-# captures per run), read the peak mysqld RSS / free-memory drop from those,
-# then set a limit here with headroom above that peak -- not a guess, and not
-# a number borrowed from the CEMU thread's own comparison. setup-cgroup-flax.sh
-# refuses to run while this is empty; run-flax-baremetal-htap.sh's
-# --with-cgroup flag refuses to enable the cgroup while this is empty.
+# Sized 2026-08-06/07 from a real unconstrained calibration session
+# (results/profiling/htap/percona-myrocks-nvmevirt/20260806_201746/
+# memory_run<N>_{before,after}.txt): mysqld's own VmHWM peaked at 2.3 GiB
+# (run 3, flat through run 5), but the whole-session cgroup usage -- the
+# actual scope --with-cgroup wraps via cgexec (mysqld + the OLTP sysbench
+# client + LLT connections + perf record, not just mysqld) -- climbed
+# steadily to 4.92 GB by run 5 and had not plateaued (Run 1 alone added
+# +1.56 GB of that, from running ~10x longer than Runs 2-5 and giving OLTP
+# that much longer to accumulate before the snapshot). 8G gives ~1.6x
+# headroom over the observed peak. Re-check after the first --with-cgroup
+# run for OOM kills or any sign the limit itself became a new confound.
 export FLAX_CGROUP_NAME="flax_memory_group"
-export FLAX_CGROUP_MEMORY_LIMIT=""
+export FLAX_CGROUP_MEMORY_LIMIT="8G"
 
 # --- Percona Server build tree (raw build dir, not an installed prefix) ---
 export FLAX_PS_BUILD_DIR="$HOME/flax-scratch/repos/percona-server/build"
