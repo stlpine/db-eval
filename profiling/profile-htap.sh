@@ -463,8 +463,29 @@ start_monitors "$RESULT_DIR" "profiling_htap"
 # visibly distorting that run's perf-context deltas). FLUSH_SETTLE_OVERHEAD
 # covers the (HTAP_OLAP_RUNS - 1) re-flush waits; the initial pre-loop
 # flush+settle is already covered by the existing +60s margin below.
-FLUSH_SETTLE_OVERHEAD=$(( 30 * (HTAP_OLAP_RUNS - 1) ))
-LLT_SLEEP_DURATION=$(( HTAP_WARMUP_DURATION + HTAP_OLAP_RUNS * HTAP_QUERY_TIMEOUT + FLUSH_SETTLE_OVERHEAD ))
+
+# Run 1/Run 3 timeout investigation: optional diagnostic "Run 0" -- one extra
+# join4.sql execution inserted at the exact point Run 1 normally occupies
+# (same LLTs, same OLTP, same warmup/flush/settle -- nothing about the
+# concurrency setup differs). The only variable that changes between it and
+# the run that follows is whether it's the first query since mysqld's cold
+# restart. Confirmed 2026-08-06/07: with the physical SST data essentially
+# unchanged between Run 1 and Run 2 (identical L6 file count/size/compaction
+# count), Run 1 still showed a 20-30x higher internal_key_skipped_count than
+# every later run -- ruling out "more accumulated data" as the cause and
+# pointing at something specific to Run 1's execution context instead. If
+# the anomaly follows Run 0 here and the run that follows it (still labeled
+# "Run 1") becomes fast like today's Run 2-5, that confirms a cold-restart/
+# read-view-initialization cause. See project_flax_run1_timeout_priority
+# memory. Opt-in via HTAP_DIAGNOSE_RUN0=true (default off, no behavior change).
+RUN_START=1
+if [ "${HTAP_DIAGNOSE_RUN0:-false}" = "true" ]; then
+    RUN_START=0
+    log_info "HTAP_DIAGNOSE_RUN0=true: inserting a diagnostic Run 0 before Run 1 (Run 1/Run 3 timeout investigation)"
+fi
+EFFECTIVE_OLAP_RUNS=$(( HTAP_OLAP_RUNS + (RUN_START == 0 ? 1 : 0) ))
+FLUSH_SETTLE_OVERHEAD=$(( 30 * (EFFECTIVE_OLAP_RUNS - 1) ))
+LLT_SLEEP_DURATION=$(( HTAP_WARMUP_DURATION + EFFECTIVE_OLAP_RUNS * HTAP_QUERY_TIMEOUT + FLUSH_SETTLE_OVERHEAD ))
 
 # Log configuration
 CONFIG_LOG="${RESULT_DIR}/profiling_config.log"
@@ -500,6 +521,7 @@ CONFIG_LOG="${RESULT_DIR}/profiling_config.log"
     echo "HTAP_DURATION: $HTAP_DURATION"
     echo "HTAP_CTX_INTERVAL: $HTAP_CTX_INTERVAL"
     echo "HTAP_OLAP_RUNS: $HTAP_OLAP_RUNS"
+    echo "HTAP_DIAGNOSE_RUN0: ${HTAP_DIAGNOSE_RUN0:-false} (Run 1/Run 3 timeout investigation diagnostic; RUN_START=${RUN_START})"
     echo "CUTOFF: $CUTOFF"
     echo "BENCHMARK_DB: $BENCHMARK_DB"
     echo "CGROUP_MEMORY_LIMIT (env.sh default -- NOT necessarily enforced, see next line): $CGROUP_MEMORY_LIMIT"
@@ -718,11 +740,11 @@ log_info "Snapshot loop PID: $SNAPSHOT_PID"
 
 JOIN4_CONTENT=$(cat "$JOIN4_SQL")
 
-log_info "Starting OLAP profiling loop (${HTAP_OLAP_RUNS} runs, cutoff=${CUTOFF})..."
+log_info "Starting OLAP profiling loop (${HTAP_OLAP_RUNS} runs$([ "$RUN_START" -eq 0 ] && echo " + diagnostic Run 0"), cutoff=${CUTOFF})..."
 
 declare -A PERF_ELAPSED  # elapsed time per run, used for deferred flamegraph titles
 
-for RUN in $(seq 1 "$HTAP_OLAP_RUNS"); do
+for RUN in $(seq "$RUN_START" "$HTAP_OLAP_RUNS"); do
     log_info "── OLAP Run ${RUN}/${HTAP_OLAP_RUNS} ──────────────────────────────"
 
     # Abort immediately if MySQL is gone — remaining runs would produce zeros
@@ -1117,8 +1139,8 @@ done
 
 # ── Phase 8: Flamegraph generation (deferred) ────────────────────────────────
 log_info "=========================================="
-log_info "Generating flamegraphs (deferred — ${HTAP_OLAP_RUNS} runs)..."
-for RUN in $(seq 1 "$HTAP_OLAP_RUNS"); do
+log_info "Generating flamegraphs (deferred — ${HTAP_OLAP_RUNS} runs$([ "$RUN_START" -eq 0 ] && echo " + diagnostic Run 0"))..."
+for RUN in $(seq "$RUN_START" "$HTAP_OLAP_RUNS"); do
     perf_data="${RESULT_DIR}/perf_htap_run${RUN}.data"
     if [ -s "$perf_data" ]; then
         svg="${RESULT_DIR}/flamegraph_htap_run${RUN}.svg"

@@ -5,7 +5,7 @@
 # equivalent (scaled-down first pass this bare-metal run supersedes).
 #
 # Usage:
-#   bash run-flax-baremetal-htap.sh [--skip-prepare] [--cutoff <n>] [--with-cgroup]
+#   bash run-flax-baremetal-htap.sh [--skip-prepare] [--cutoff <n>] [--with-cgroup] [--diagnose-run1]
 #
 # Examples:
 #   bash run-flax-baremetal-htap.sh                  # prepare data + run profiling
@@ -17,6 +17,15 @@
 #                                                     # real unconstrained session's
 #                                                     # memory_run<N>_*.txt files, and
 #                                                     # ./scripts/setup-cgroup-flax.sh run once
+#   bash run-flax-baremetal-htap.sh --diagnose-run1  # Run 1/Run 3 timeout investigation:
+#                                                     # inserts one extra join4.sql execution
+#                                                     # ("Run 0") at the point Run 1 normally
+#                                                     # occupies, under identical LLT/OLTP
+#                                                     # conditions -- isolates whether the
+#                                                     # anomaly tracks "first query since cold
+#                                                     # restart" vs. something else. See
+#                                                     # profile-htap.sh's own comment and the
+#                                                     # project_flax_run1_timeout_priority memory.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -27,15 +36,21 @@ source "${SCRIPT_DIR}/../common/config/env.sh"
 SKIP_PREPARE=false
 CUTOFF="${HTAP_JOIN_CUTOFF}"
 WITH_CGROUP=false
+DIAGNOSE_RUN1=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-prepare) SKIP_PREPARE=true; shift ;;
         --cutoff) CUTOFF="$2"; shift 2 ;;
         --with-cgroup) WITH_CGROUP=true; shift ;;
+        --diagnose-run1) DIAGNOSE_RUN1=true; shift ;;
         *) log_error "Unknown option: $1"; exit 1 ;;
     esac
 done
+
+# Exported (not just a local var) so it survives the `sudo -E` re-exec into
+# profile-htap.sh below, same reason SOCKET/HTAP_*/etc. need -E in the first place.
+export HTAP_DIAGNOSE_RUN0="$DIAGNOSE_RUN1"
 
 # --with-cgroup: opt-in only, and only usable once FLAX_CGROUP_MEMORY_LIMIT
 # has been sized from real calibration data (see env-flax-baremetal.sh's own
@@ -76,6 +91,7 @@ if [ "$WITH_CGROUP" = "true" ]; then
 else
     log_info "Memory limit : none (unconstrained; pass --with-cgroup once sized to enable)"
 fi
+log_info "Diagnose Run1: ${DIAGNOSE_RUN1} (inserts a diagnostic Run 0 before Run 1 when true)"
 log_info "=========================================="
 
 mkdir -p "${RESULTS_DIR}"
