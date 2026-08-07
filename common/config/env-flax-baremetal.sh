@@ -37,29 +37,6 @@
 export FLAX_CGROUP_NAME="flax_memory_group"
 export FLAX_CGROUP_MEMORY_LIMIT="8G"
 
-# --- TEMPORARY diagnostic override, Run 1/Run 3 timeout investigation ---
-# Testing the hypothesis that sysbench's 24 OLTP threads (all spawned/
-# connected at once) fire their first several queries in a synchronized
-# burst that decoheres into a smoother steady-state pattern over the next
-# several iterations -- and that env.sh's default 60s warmup isn't long
-# enough for that decoherence to finish before the first OLAP query starts,
-# so whichever run goes first catches the tail of it. This predicts Run 1's
-# 7200s timeout is a one-time startup transient, not a persistent structural
-# imbalance -- which a plain queueing-backlog theory can't explain (that
-# would predict LATER runs getting worse over the session, not better,
-# which is the opposite of what's observed). 60s -> 600s is a cheap,
-# zero-rebuild test of that: if it fixes Run 1, this hypothesis is
-# confirmed and the real fix is either keeping a longer warmup or directly
-# throttling/staggering OLTP's startup; if Run 1 still times out, this is
-# ruled out and points back toward mutex caller-restriction (or something
-# else). Must override HERE, not by exporting before sourcing env.sh --
-# env.sh's own HTAP_WARMUP_DURATION export is unconditional and clobbers any
-# earlier value (same gotcha as HTAP_QUERY_TIMEOUT/HTAP_OLAP_RUNS, see
-# db-eval/CLAUDE.md). REVERT once this test is done, one way or the other --
-# not meant to be a permanent change. See project_flax_run1_timeout_priority
-# memory for the full investigation.
-export HTAP_WARMUP_DURATION="600"
-
 # --- Percona Server build tree (raw build dir, not an installed prefix) ---
 export FLAX_PS_BUILD_DIR="$HOME/flax-scratch/repos/percona-server/build"
 export PATH="${FLAX_PS_BUILD_DIR}/runtime_output_directory:${PATH}"
