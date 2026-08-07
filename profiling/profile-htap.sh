@@ -107,6 +107,10 @@ start_mysql_cold() {
     # non-root guest user, and bash evaluates that redirect before the
     # trailing 2>/dev/null takes effect, so the error would leak regardless.
     [ "$IS_NVMEVIRT" = "true" ] && { ${BENCH_SUDO-sudo} tee /tmp/nvmevirt_debug.log < /dev/null > /dev/null 2>&1 || true; }
+    # Iterator-recreation diagnostic log (rdb_iterator.cc) -- applies to any
+    # MyRocks engine, not just device-offload ones, since it instruments
+    # Rdb_iterator_base directly. Same truncate pattern/reasoning as above.
+    [ "$IS_MYROCKS" = "true" ] && { ${BENCH_SUDO-sudo} tee /tmp/rdb_iterator_debug.log < /dev/null > /dev/null 2>&1 || true; }
     log_info "Starting MySQL (cold)..."
     "${SCRIPT_DIR}/../scripts/mysql-control.sh" "$ENGINE" start
     sleep 5
@@ -153,6 +157,25 @@ capture_data_profile() {
             ORDER BY (DATA_LENGTH + INDEX_LENGTH) DESC;" 2>/dev/null | tr '\t' ','
     } > "${result_dir}/data_profile.csv" 2>&1 || true
     log_info "Data profile saved to: ${result_dir}/data_profile.csv"
+}
+
+# capture_index_ddl_map: index_number -> (table, index, CF) mapping, needed to
+# decode /tmp/rdb_iterator_debug.log's iterator-recreation events -- that log
+# only has cf/index_number (no table name available at that point in the
+# code), and sbtest1-4 all share the same CF and the same index name
+# ("PRIMARY"), so index_number is the only thing that actually distinguishes
+# them.
+capture_index_ddl_map() {
+    local result_dir=$1
+    log_info "Capturing index/DDL map (for rdb_iterator_debug.log)..."
+    if [ "$IS_MYROCKS" = "true" ]; then
+        mysql --socket="$SOCKET" --batch 2>/dev/null \
+            -e "SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, INDEX_NUMBER, COLUMN_FAMILY
+                FROM information_schema.ROCKSDB_DDL
+                WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
+                ORDER BY TABLE_NAME;" > "${result_dir}/rocksdb_ddl_index_map.txt" 2>&1 || true
+    fi
+    log_info "Index/DDL map saved to: ${result_dir}/rocksdb_ddl_index_map.txt"
 }
 
 # snapshot_perf_context_global: fetch cumulative RocksDB/InnoDB counters.
@@ -389,6 +412,7 @@ if [ "$IS_NVMEVIRT" = "true" ]; then
 fi
 
 capture_data_profile "$RESULT_DIR"
+capture_index_ddl_map "$RESULT_DIR"
 
 # Stabilise optimizer statistics before any workload starts.
 # ANALYZE TABLE alone is not enough for MyRocks: SST row count estimates can be
@@ -832,6 +856,22 @@ SQL
 
     start_time=$(date +%s.%N)
 
+    # Diagnostic instrumentation: when HTAP_DIAGNOSE_RUN0 is set, substitute
+    # EXPLAIN ANALYZE for the plain query on every run this session (not just
+    # the slow one) -- EXPLAIN ANALYZE genuinely executes the statement and
+    # reports real per-operator row counts/timings/loop counts, so
+    # ROCKSDB_PERF_CONTEXT deltas and Handler_read_* counters below remain
+    # real measurements of real execution; only the query text changes.
+    # Applied to every run (not just the anomalous one) so this single
+    # session captures a full comparison set across slow and fast runs.
+    QUERY_TO_RUN="$JOIN4_CONTENT"
+    EXPLAIN_ANALYZE_THIS_RUN=false
+    if [ "${HTAP_DIAGNOSE_RUN0:-false}" = "true" ]; then
+        QUERY_TO_RUN="EXPLAIN ANALYZE ${JOIN4_CONTENT}"
+        EXPLAIN_ANALYZE_THIS_RUN=true
+        log_info "  Run ${RUN}: capturing EXPLAIN ANALYZE"
+    fi
+
     # Run the analytical query.
     # For MyRocks: information_schema.rocksdb_perf_context is PER-SESSION.
     # Capturing it from an external connection always returns zeros (observed in
@@ -856,13 +896,14 @@ WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
   AND TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4');
 SELECT 'CTX_SPLIT' AS ctx_marker;
 FLUSH STATUS;
-${JOIN4_CONTENT}
+${QUERY_TO_RUN}
 SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
 WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
   AND TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4');
 SHOW SESSION STATUS LIKE 'Handler_read_first';
 SHOW SESSION STATUS LIKE 'Handler_read_next';
 SHOW SESSION STATUS LIKE 'Handler_read_rnd_next';
+SELECT 'CONN_ID_MARKER' AS marker, CONNECTION_ID() AS olap_connection_id;
 SQL
         )
     elif [ "$ENGINE" = "percona-myrocks-csd" ]; then
@@ -880,7 +921,7 @@ SHOW GLOBAL STATUS LIKE 'Rocksdb_cemu_keys%';
 SHOW GLOBAL STATUS LIKE 'Rocksdb_cemu_freeze%';
 SELECT 'CSD_SPLIT' AS csd_marker;
 FLUSH STATUS;
-${JOIN4_CONTENT}
+${QUERY_TO_RUN}
 SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
 WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
   AND TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4');
@@ -889,6 +930,7 @@ SHOW GLOBAL STATUS LIKE 'Rocksdb_cemu_freeze%';
 SHOW SESSION STATUS LIKE 'Handler_read_first';
 SHOW SESSION STATUS LIKE 'Handler_read_next';
 SHOW SESSION STATUS LIKE 'Handler_read_rnd_next';
+SELECT 'CONN_ID_MARKER' AS marker, CONNECTION_ID() AS olap_connection_id;
 SQL
         )
     elif [ "$ENGINE" = "percona-myrocks-nvmevirt" ]; then
@@ -907,7 +949,7 @@ SELECT 'CTX_SPLIT' AS ctx_marker;
 SHOW GLOBAL STATUS LIKE 'Rocksdb_nvmevirt_keys%';
 SELECT 'CSD_SPLIT' AS csd_marker;
 FLUSH STATUS;
-${JOIN4_CONTENT}
+${QUERY_TO_RUN}
 SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
 WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
   AND TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4');
@@ -915,6 +957,7 @@ SHOW GLOBAL STATUS LIKE 'Rocksdb_nvmevirt_keys%';
 SHOW SESSION STATUS LIKE 'Handler_read_first';
 SHOW SESSION STATUS LIKE 'Handler_read_next';
 SHOW SESSION STATUS LIKE 'Handler_read_rnd_next';
+SELECT 'CONN_ID_MARKER' AS marker, CONNECTION_ID() AS olap_connection_id;
 SQL
         )
     else
@@ -936,6 +979,34 @@ SQL
     end_time=$(date +%s.%N)
     elapsed=$(echo "$end_time - $start_time" | bc)
     PERF_ELAPSED[$RUN]=$elapsed
+
+    # Extract the EXPLAIN ANALYZE tree (actual per-operator row counts/
+    # timings/loop counts). It sits between the CSD_SPLIT marker and the
+    # next TABLE_SCHEMA header (the ctx_after ROCKSDB_PERF_CONTEXT query) in
+    # raw_output -- same anchor style as the ctx_after extraction below,
+    # bounded to start after CSD_SPLIT instead of counting TABLE_SCHEMA
+    # occurrences.
+    if [ "$EXPLAIN_ANALYZE_THIS_RUN" = "true" ]; then
+        echo "$raw_output" | awk '/^CSD_SPLIT/{f=1;next} f&&/^TABLE_SCHEMA/{exit} f{print}' \
+            > "${RESULT_DIR}/explain_analyze_run${RUN}.txt"
+        log_info "  Run ${RUN}: EXPLAIN ANALYZE saved to ${RESULT_DIR}/explain_analyze_run${RUN}.txt"
+    fi
+
+    # This run's own MySQL CONNECTION_ID(), captured via the CONN_ID_MARKER
+    # SELECT deliberately placed as the VERY LAST statement in each engine
+    # branch's heredoc above -- placing it any earlier (e.g. at the top)
+    # would shift NR==1 for _ctx_delta's header-detection awk below and
+    # silently zero out every perf-context metric (confirmed by tracing
+    # that awk before adding this; don't move the marker without re-checking
+    # that). This is the same value rdb_iterator_debug.log's "thd=" field
+    # logs as this connection's THD::thread_id() -- confirmed identical via
+    # sql_class.cc (CONNECTION_ID() returns pseudo_thread_id, initialized to
+    # exactly m_thread_id for any normal connection) -- letting this run's
+    # own iterator-recreation events be isolated from the 24 concurrent OLTP
+    # threads' events in that log.
+    olap_connection_id=$(echo "$raw_output" | awk -F'\t' '$1=="CONN_ID_MARKER"{print $2}')
+    echo "$olap_connection_id" > "${RESULT_DIR}/olap_connection_id_run${RUN}.txt"
+    log_info "  Run ${RUN}: OLAP connection/thread id = ${olap_connection_id:-UNKNOWN}"
 
     # RocksDB LSM/compaction state right after the query -- paired with the
     # "_before" snapshot above to see how much L0/compaction backlog built up

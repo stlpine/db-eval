@@ -37,6 +37,20 @@
 export FLAX_CGROUP_NAME="flax_memory_group"
 export FLAX_CGROUP_MEMORY_LIMIT="8G"
 
+# --- TEMPORARY: safety margin for the EXPLAIN ANALYZE + iterator-recreation-
+# logging diagnostic session ---
+# Both EXPLAIN ANALYZE and the new rdb_iterator_debug.log instrumentation
+# add real overhead on top of plain query execution -- the log write in
+# particular could fire millions of times during the slow run if the
+# iterator-recreation hypothesis is right, and that combined overhead isn't
+# precisely quantifiable in advance. The session this override is for must
+# not be re-run, so the margin errs generous: 14400s (4h) vs. the
+# ~7200-7208s baseline observed with neither instrumentation active.
+# LLT_SLEEP_DURATION in profile-htap.sh scales off this value automatically
+# -- no separate change needed there. REVERT once this diagnostic session
+# is done.
+export HTAP_QUERY_TIMEOUT="14400"
+
 # --- Percona Server build tree (raw build dir, not an installed prefix) ---
 export FLAX_PS_BUILD_DIR="$HOME/flax-scratch/repos/percona-server/build"
 export PATH="${FLAX_PS_BUILD_DIR}/runtime_output_directory:${PATH}"
