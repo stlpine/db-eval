@@ -98,19 +98,32 @@ drop_page_cache() {
 start_mysql_cold() {
     ensure_mysql_stopped "$ENGINE"
     drop_page_cache
-    # Truncate the device-offload debug log so each profiling run starts clean.
+    # Clear the device-offload debug log so each profiling run starts clean.
     # Without this, tail -N shows entries from previous sessions mixed with current.
     [ "$IS_CSD" = "true" ] && > /tmp/cemu_debug.log 2>/dev/null || true
-    # sudo'd (tee, not a plain redirect): mysqld runs as root in the FLAX
-    # sandbox, so a leftover log from a prior run is root-owned -- a plain
-    # `> file` here would fail with "Permission denied" as the invoking
-    # non-root guest user, and bash evaluates that redirect before the
-    # trailing 2>/dev/null takes effect, so the error would leak regardless.
-    [ "$IS_NVMEVIRT" = "true" ] && { ${BENCH_SUDO-sudo} tee /tmp/nvmevirt_debug.log < /dev/null > /dev/null 2>&1 || true; }
+    # sudo'd: mysqld runs as root in the FLAX sandbox, so a leftover log from
+    # a prior run is root-owned -- a plain `> file` here would fail with
+    # "Permission denied" as the invoking non-root guest user.
+    #
+    # delete-then-let-mysqld-recreate, NOT truncate-in-place. Confirmed
+    # 2026-08-09: `sudo tee file < /dev/null` (open-for-write, i.e. O_TRUNC)
+    # can fail with EACCES even for root, for reasons not fully root-caused
+    # (ruled out: chattr immutable/append-only attributes -- lsattr showed
+    # only the harmless "extent format" flag; a stray process holding the
+    # file open -- lsof showed nothing; AppArmor confining root or mysqld --
+    # no relevant profile in `aa-status`; /tmp being a special/FUSE mount --
+    # it isn't, `mount` shows no separate /tmp entry). `rm -f` (which only
+    # needs write permission on the *directory*, a different check than
+    # O_TRUNC on the file itself) succeeded every time this failed, and
+    # mysqld's own `fopen(path, "a")` creates the file fresh (root-owned)
+    # if it doesn't exist -- strictly more robust than truncating in place,
+    # and self-heals whatever ownership/attribute state the file drifts
+    # into, without needing to understand why.
+    [ "$IS_NVMEVIRT" = "true" ] && { ${BENCH_SUDO-sudo} rm -f /tmp/nvmevirt_debug.log 2>/dev/null || true; }
     # Iterator-recreation diagnostic log (rdb_iterator.cc) -- applies to any
     # MyRocks engine, not just device-offload ones, since it instruments
-    # Rdb_iterator_base directly. Same truncate pattern/reasoning as above.
-    [ "$IS_MYROCKS" = "true" ] && { ${BENCH_SUDO-sudo} tee /tmp/rdb_iterator_debug.log < /dev/null > /dev/null 2>&1 || true; }
+    # Rdb_iterator_base directly. Same delete-then-recreate reasoning above.
+    [ "$IS_MYROCKS" = "true" ] && { ${BENCH_SUDO-sudo} rm -f /tmp/rdb_iterator_debug.log 2>/dev/null || true; }
     log_info "Starting MySQL (cold)..."
     "${SCRIPT_DIR}/../scripts/mysql-control.sh" "$ENGINE" start
     sleep 5
