@@ -37,19 +37,32 @@
 export FLAX_CGROUP_NAME="flax_memory_group"
 export FLAX_CGROUP_MEMORY_LIMIT="8G"
 
-# --- TEMPORARY: safety margin for the EXPLAIN ANALYZE + iterator-recreation-
-# logging diagnostic session ---
-# Both EXPLAIN ANALYZE and the new rdb_iterator_debug.log instrumentation
-# add real overhead on top of plain query execution -- the log write in
-# particular could fire millions of times during the slow run if the
-# iterator-recreation hypothesis is right, and that combined overhead isn't
-# precisely quantifiable in advance. The session this override is for must
-# not be re-run, so the margin errs generous: 14400s (4h) vs. the
-# ~7200-7208s baseline observed with neither instrumentation active.
-# LLT_SLEEP_DURATION in profile-htap.sh scales off this value automatically
-# -- no separate change needed there. REVERT once this diagnostic session
-# is done.
-export HTAP_QUERY_TIMEOUT="14400"
+# --- TEMPORARY: deliberately short timeout, join-cardinality-vs-snapshot
+# diagnostic session ---
+# Previous EXPLAIN ANALYZE session (20260807_221846) found: MySQL only
+# prints EXPLAIN ANALYZE's actual-stats tree for a KILLED query
+# (opt_explain.cc:2275 -- unit->execute() runs to completion or
+# interruption, and a *successful* completion skips the tree-printing
+# ExplainIterator() call entirely; only the interrupted case's frozen
+# iterators are still walkable). That session's one killed run (Run 0)
+# showed a massive join-cardinality cascade -- t1<=>t2 8.2M rows, <=>t3
+# 2.49B, <=>t4 72B -- fully explaining its ~14400s elapsed time on its
+# own, independent of RocksDB/offload. Now testing directly whether this
+# cardinality genuinely differs by snapshot position (not yet confirmed --
+# the completed runs never printed a tree to compare against).
+#
+# This deliberately exploits the same "killed queries print their tree"
+# behavior on EVERY run this time: a short, fixed timeout forces every run
+# (0-5) to be killed at the same wall-clock cutoff, so every run's partial
+# tree becomes comparable. 450s is chosen specifically to safely exceed
+# the t1<=>t2 join level's completion time (<1s observed) AND the t2<=>t3
+# level's (136.5s observed, worst case so far) -- both levels should be
+# reporting a FINAL, not partial, cardinality at this cutoff, which is the
+# actual comparison this test needs. The outer t4 join level will still be
+# partial/growing at this cutoff -- not useful for this specific
+# comparison, that's expected and fine.
+# REVERT once this diagnostic session is done.
+export HTAP_QUERY_TIMEOUT="450"
 
 # --- Percona Server build tree (raw build dir, not an installed prefix) ---
 export FLAX_PS_BUILD_DIR="$HOME/flax-scratch/repos/percona-server/build"
