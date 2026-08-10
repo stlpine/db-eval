@@ -54,15 +54,18 @@ export FLAX_CGROUP_MEMORY_LIMIT="8G"
 # This deliberately exploits the same "killed queries print their tree"
 # behavior on EVERY run this time: a short, fixed timeout forces every run
 # (0-5) to be killed at the same wall-clock cutoff, so every run's partial
-# tree becomes comparable. 450s is chosen specifically to safely exceed
+# tree becomes comparable. 450s was chosen specifically to safely exceed
 # the t1<=>t2 join level's completion time (<1s observed) AND the t2<=>t3
 # level's (136.5s observed, worst case so far) -- both levels should be
-# reporting a FINAL, not partial, cardinality at this cutoff, which is the
-# actual comparison this test needs. The outer t4 join level will still be
-# partial/growing at this cutoff -- not useful for this specific
-# comparison, that's expected and fine.
-# REVERT once this diagnostic session is done.
-export HTAP_QUERY_TIMEOUT="450"
+# reporting a FINAL, not partial, cardinality at this cutoff, which was the
+# actual comparison that test needed. The outer t4 join level was still
+# partial/growing at that cutoff -- not useful for that specific
+# comparison, which was expected and fine there.
+# Reverted back to the full-scale default (env.sh's own HTAP_QUERY_TIMEOUT=7200)
+# for the v2 caller-restriction validation run -- that test needs runs to
+# complete naturally (real elapsed time / OLTP throughput), not be killed at
+# a fixed cutoff. Re-apply the 450s override above if the killed-query
+# EXPLAIN ANALYZE comparison technique is needed again later.
 
 # --- Percona Server build tree (raw build dir, not an installed prefix) ---
 export FLAX_PS_BUILD_DIR="$HOME/flax-scratch/repos/percona-server/build"

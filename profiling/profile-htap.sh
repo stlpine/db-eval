@@ -949,11 +949,23 @@ SQL
     elif [ "$ENGINE" = "percona-myrocks-nvmevirt" ]; then
         # Same layout as the CSD branch above, minus the freeze counter (no
         # VM-wide freeze in FLAX's v1 offload -- see IS_DEVICE_OFFLOAD note).
+        #
+        # rocksdb_nvmevirt_olap_session=1 (v2 caller-restriction fix): opts
+        # THIS session into NVMeVirt MVCC-filter offload eligibility.
+        # rocksdb_nvmevirt_enabled (GLOBAL, set earlier in this script) is
+        # still required too -- this session-scoped flag additionally scopes
+        # offload down to just this OLAP connection, so the 24 concurrent
+        # OLTP sysbench connections (which never set it, default off) fall
+        # back to the unfiltered reader instead of contending for
+        # g_nvmevirt_exec_mutex alongside the OLAP scan. See
+        # project_flax_mutex_removal_not_recommended memory for why this
+        # exists.
         raw_output=$(mysql --socket="$SOCKET" "$BENCHMARK_DB" \
             --batch --force 2>/dev/null <<SQL
 SET SESSION transaction_isolation='REPEATABLE-READ';
 SET SESSION rocksdb_perf_context_level=${PROFILING_PERF_CONTEXT_LEVEL};
 SET SESSION max_execution_time=$((HTAP_QUERY_TIMEOUT * 1000));
+SET SESSION rocksdb_nvmevirt_olap_session=1;
 SET @htap_cutoff = ${CUTOFF};
 SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
 WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
