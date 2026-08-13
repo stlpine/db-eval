@@ -231,8 +231,24 @@ sudo perf stat -p $MYSQLD_PID -e cycles,instructions,cache-misses,LLC-load-misse
 
 Same HTAP profiling machinery as the CEMU thread above (`profiling/profile-htap.sh`,
 `scripts/mysql-control.sh`), reused for a **different, independent research thread** —
-see `~/Projects/snu-csl/CLAUDE.md` and `FLAX/CLAUDE.md` for what FLAX itself is. Two
-deployment environments, each with its own env-override file, both hooked into
+see `~/Projects/snu-csl/CLAUDE.md` and `FLAX/CLAUDE.md` for what FLAX itself is.
+
+**The workload** (every session under `results/profiling/htap/percona-myrocks-nvmevirt/`
+runs this same mix, not a different benchmark per session): background OLTP is
+`sysbench oltp_read_write.lua` against `sbtest1-12` (24 threads at full scale), run
+concurrently with 4 held-open long-lived transactions (LLTs) that pin RocksDB's GC
+snapshot so OLTP writes accumulate stale MVCC versions instead of being compacted away.
+The analytical query is `sysbench-htap/queries/mysql/join4.sql` — a `STRAIGHT_JOIN`-
+pinned 4-way inner join across `sbtest1-4` (migrated to the `nvmevirt_olap`/`csd_`-style
+CF for offload eligibility) on the non-indexed `k` column, run 3-5 times per session
+(`HTAP_OLAP_RUNS`) while OLTP keeps writing in the background, so later runs see more
+accumulated version bloat than earlier ones. This is the same experimental design as the
+CEMU thread's `percona-myrocks-csd` sessions above, just a different offload mechanism.
+Per-session details (mode, scale, one-line finding) are indexed in the
+`project_flax_htap_session_index` memory — update that index whenever a new session's
+results are rsynced to this machine, not just when the run is analyzed in depth.
+
+Two deployment environments, each with its own env-override file, both hooked into
 `common/config/env.sh` via the same mechanism as `CEMU_VM_ENV`:
 
 | Environment | Env override file | Runner script | Scale |
