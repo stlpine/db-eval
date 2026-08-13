@@ -501,20 +501,10 @@ start_monitors "$RESULT_DIR" "profiling_htap"
 # covers the (HTAP_OLAP_RUNS - 1) re-flush waits; the initial pre-loop
 # flush+settle is already covered by the existing +60s margin below.
 
-# Run 1/Run 3 timeout investigation: optional diagnostic "Run 0" -- one extra
-# join4.sql execution inserted at the exact point Run 1 normally occupies
-# (same LLTs, same OLTP, same warmup/flush/settle -- nothing about the
-# concurrency setup differs). The only variable that changes between it and
-# the run that follows is whether it's the first query since mysqld's cold
-# restart. Confirmed 2026-08-06/07: with the physical SST data essentially
-# unchanged between Run 1 and Run 2 (identical L6 file count/size/compaction
-# count), Run 1 still showed a 20-30x higher internal_key_skipped_count than
-# every later run -- ruling out "more accumulated data" as the cause and
-# pointing at something specific to Run 1's execution context instead. If
-# the anomaly follows Run 0 here and the run that follows it (still labeled
-# "Run 1") becomes fast like today's Run 2-5, that confirms a cold-restart/
-# read-view-initialization cause. See project_flax_run1_timeout_priority
-# memory. Opt-in via HTAP_DIAGNOSE_RUN0=true (default off, no behavior change).
+# Optional diagnostic "Run 0": one extra join4.sql execution inserted at the
+# exact point Run 1 normally occupies (same LLTs/OLTP/warmup/flush/settle),
+# for investigating why Run 1 is sometimes far slower than later runs.
+# Opt-in via HTAP_DIAGNOSE_RUN0=true (default off, no behavior change).
 RUN_START=1
 if [ "${HTAP_DIAGNOSE_RUN0:-false}" = "true" ]; then
     RUN_START=0
@@ -822,17 +812,10 @@ for RUN in $(seq "$RUN_START" "$HTAP_OLAP_RUNS"); do
         sleep 30
     fi
 
-    # TEMPORARY DIAGNOSTIC, opt-in via HTAP_CLEAR_BLOCK_CACHE_BEFORE_RUN -- tests
-    # whether the Run1-vs-later-runs HTAP anomaly is caused by RocksDB's own
-    # in-process block cache being cold only once per session (see
-    # project_flax_run1_timeout_priority memory, 2026-08-12 RESOLVED section).
-    # Shrinks rocksdb_block_cache_size to RDB_MIN_BLOCK_CACHE_SIZE (evicts nearly
-    # everything via LRU pressure, confirmed dynamically settable at runtime with
-    # no mysqld restart needed -- ha_rocksdb.cc's rocksdb_validate_set_block_cache_size()
-    # calls Cache::SetCapacity() directly) then restores the original capacity, so
-    # the cache starts effectively empty again for this run without touching
-    # LLTs/OLTP connections. Not a permanent feature -- remove once the
-    # confirmatory test is done.
+    # TEMPORARY DIAGNOSTIC, opt-in via HTAP_CLEAR_BLOCK_CACHE_BEFORE_RUN --
+    # shrinks rocksdb_block_cache_size to evict it via LRU pressure then
+    # restores it, so the run starts cold without a restart or touching
+    # LLTs/OLTP. Remove once no longer needed.
     if [ "$IS_MYROCKS" = "true" ] && [ -n "${HTAP_CLEAR_BLOCK_CACHE_BEFORE_RUN:-}" ] && \
        [ "$RUN" = "$HTAP_CLEAR_BLOCK_CACHE_BEFORE_RUN" ]; then
         orig_cache_size=$(mysql --socket="$SOCKET" -N -e \
@@ -892,31 +875,34 @@ SQL
 
     start_time=$(date +%s.%N)
 
-    # Diagnostic instrumentation: when HTAP_DIAGNOSE_RUN0 is set, substitute
-    # EXPLAIN ANALYZE for the plain query on every run this session (not just
-    # the slow one) -- EXPLAIN ANALYZE genuinely executes the statement and
-    # reports real per-operator row counts/timings/loop counts, so
-    # ROCKSDB_PERF_CONTEXT deltas and Handler_read_* counters below remain
-    # real measurements of real execution; only the query text changes.
-    # Applied to every run (not just the anomalous one) so this single
-    # session captures a full comparison set across slow and fast runs.
+    # HTAP_DIAGNOSE_RUN0 substitutes EXPLAIN ANALYZE for the plain query on
+    # every run -- it genuinely executes, so downstream measurements stay real.
     QUERY_TO_RUN="$JOIN4_CONTENT"
     EXPLAIN_ANALYZE_THIS_RUN=false
+    DUP_CHECK_QUERIES=""
     if [ "${HTAP_DIAGNOSE_RUN0:-false}" = "true" ]; then
         QUERY_TO_RUN="EXPLAIN ANALYZE ${JOIN4_CONTENT}"
         EXPLAIN_ANALYZE_THIS_RUN=true
         log_info "  Run ${RUN}: capturing EXPLAIN ANALYZE"
+        # Same-connection MVCC duplicate check: COUNT(*) vs COUNT(DISTINCT id)
+        # catches version leakage; the k histogram catches join-cardinality skew.
+        DUP_CHECK_QUERIES="SELECT 'DUP_CHECK_SPLIT' AS dup_marker;
+SELECT COUNT(*) AS total_rows, COUNT(DISTINCT id) AS distinct_ids FROM sbtest1;
+SELECT COUNT(*) AS total_rows, COUNT(DISTINCT id) AS distinct_ids FROM sbtest2;
+SELECT COUNT(*) AS total_rows, COUNT(DISTINCT id) AS distinct_ids FROM sbtest3;
+SELECT COUNT(*) AS total_rows, COUNT(DISTINCT id) AS distinct_ids FROM sbtest4;
+SELECT k, COUNT(*) AS n FROM sbtest1 GROUP BY k ORDER BY n DESC LIMIT 20;
+SELECT k, COUNT(*) AS n FROM sbtest2 GROUP BY k ORDER BY n DESC LIMIT 20;
+SELECT k, COUNT(*) AS n FROM sbtest3 GROUP BY k ORDER BY n DESC LIMIT 20;
+SELECT k, COUNT(*) AS n FROM sbtest4 GROUP BY k ORDER BY n DESC LIMIT 20;"
     fi
 
-    # Run the analytical query.
-    # For MyRocks: information_schema.rocksdb_perf_context is PER-SESSION.
-    # Capturing it from an external connection always returns zeros (observed in
-    # all 4 prior runs).  Instead, snapshot it WITHIN this session before and
-    # after the join query.  The CTX_SPLIT sentinel separates before/after in
-    # the raw output so the shell can compute per-run deltas.
-    # For the CSD engine: additionally collect global CEMU counters (rocksdb_cemu_keys_*)
-    # around the join.  These are global atomics incremented by CemuResultIterator destructors
-    # and are read via SHOW GLOBAL STATUS before and after the join query.
+    # Run the analytical query. information_schema.rocksdb_perf_context is
+    # PER-SESSION -- capturing it from an external connection always returns
+    # zeros, so it's snapshotted within this session before/after the join,
+    # split by the CTX_SPLIT sentinel so the shell can compute per-run deltas.
+    # CSD engine additionally reads global CEMU counters (rocksdb_cemu_keys_*,
+    # atomics incremented by CemuResultIterator destructors) the same way.
     if [ "$ENGINE" = "percona-myrocks" ]; then
         # ROCKSDB_PERF_CONTEXT schema: (TABLE_SCHEMA, TABLE_NAME, PARTITION_NAME, STAT_TYPE, VALUE).
         # Query with SELECT * filtered to the four join tables; _ctx_delta sums VALUE
@@ -970,19 +956,11 @@ SELECT 'CONN_ID_MARKER' AS marker, CONNECTION_ID() AS olap_connection_id;
 SQL
         )
     elif [ "$ENGINE" = "percona-myrocks-nvmevirt" ]; then
-        # Same layout as the CSD branch above, minus the freeze counter (no
-        # VM-wide freeze in FLAX's v1 offload -- see IS_DEVICE_OFFLOAD note).
-        #
-        # rocksdb_nvmevirt_olap_session=1 (v2 caller-restriction fix): opts
-        # THIS session into NVMeVirt MVCC-filter offload eligibility.
-        # rocksdb_nvmevirt_enabled (GLOBAL, set earlier in this script) is
-        # still required too -- this session-scoped flag additionally scopes
-        # offload down to just this OLAP connection, so the 24 concurrent
-        # OLTP sysbench connections (which never set it, default off) fall
-        # back to the unfiltered reader instead of contending for
-        # g_nvmevirt_exec_mutex alongside the OLAP scan. See
-        # project_flax_mutex_removal_not_recommended memory for why this
-        # exists.
+        # Same layout as the CSD branch, minus the freeze counter (no VM-wide
+        # freeze in FLAX's v1 offload). rocksdb_nvmevirt_olap_session=1 scopes
+        # offload eligibility to just this connection, keeping the 24 OLTP
+        # threads off g_nvmevirt_exec_mutex; rocksdb_nvmevirt_enabled (GLOBAL,
+        # set earlier) is still required too.
         raw_output=$(mysql --socket="$SOCKET" "$BENCHMARK_DB" \
             --batch --force 2>/dev/null <<SQL
 SET SESSION transaction_isolation='REPEATABLE-READ';
@@ -1006,6 +984,7 @@ SHOW SESSION STATUS LIKE 'Handler_read_first';
 SHOW SESSION STATUS LIKE 'Handler_read_next';
 SHOW SESSION STATUS LIKE 'Handler_read_rnd_next';
 SELECT 'CONN_ID_MARKER' AS marker, CONNECTION_ID() AS olap_connection_id;
+${DUP_CHECK_QUERIES}
 SQL
         )
     else
@@ -1030,21 +1009,29 @@ SQL
 
     # Extract the EXPLAIN ANALYZE tree (actual per-operator row counts/
     # timings/loop counts). It sits between the CSD_SPLIT marker and the
-    # next TABLE_SCHEMA header (the ctx_after ROCKSDB_PERF_CONTEXT query) in
-    # raw_output -- same anchor style as the ctx_after extraction below,
-    # bounded to start after CSD_SPLIT instead of counting TABLE_SCHEMA
-    # occurrences.
+    # next TABLE_SCHEMA header (the ctx_after ROCKSDB_PERF_CONTEXT query).
     if [ "$EXPLAIN_ANALYZE_THIS_RUN" = "true" ]; then
+        # TEMPORARY debug dump -- remove once the extraction below is confirmed reliable.
+        echo "$raw_output" > "${RESULT_DIR}/raw_output_debug_run${RUN}.txt"
         echo "$raw_output" | awk '/^CSD_SPLIT/{f=1;next} f&&/^TABLE_SCHEMA/{exit} f{print}' \
             > "${RESULT_DIR}/explain_analyze_run${RUN}.txt"
+        [ -s "${RESULT_DIR}/explain_analyze_run${RUN}.txt" ] || \
+            log_error "  WARNING: explain_analyze_run${RUN}.txt is empty -- check raw_output_debug_run${RUN}.txt"
         log_info "  Run ${RUN}: EXPLAIN ANALYZE saved to ${RESULT_DIR}/explain_analyze_run${RUN}.txt"
+
+        # Runs after CONN_ID_MARKER so it can't inflate the metrics captured above it.
+        echo "$raw_output" | awk '/^DUP_CHECK_SPLIT/{f=1;next} f{print}' \
+            > "${RESULT_DIR}/mvcc_dup_check_run${RUN}.txt"
+        [ -s "${RESULT_DIR}/mvcc_dup_check_run${RUN}.txt" ] || \
+            log_error "  WARNING: mvcc_dup_check_run${RUN}.txt is empty"
+        log_info "  Run ${RUN}: MVCC duplicate check saved to ${RESULT_DIR}/mvcc_dup_check_run${RUN}.txt"
     fi
 
     # This run's own MySQL CONNECTION_ID(), captured via the CONN_ID_MARKER
-    # SELECT deliberately placed as the VERY LAST statement in each engine
-    # branch's heredoc above -- placing it any earlier (e.g. at the top)
-    # would shift NR==1 for _ctx_delta's header-detection awk below and
-    # silently zero out every perf-context metric (confirmed by tracing
+    # SELECT. Only DUP_CHECK_QUERIES may trail it (content-matched, doesn't
+    # affect anything captured earlier) -- moving CONN_ID_MARKER itself
+    # earlier would shift NR==1 for _ctx_delta's header-detection awk below
+    # and silently zero out every perf-context metric (confirmed by tracing
     # that awk before adding this; don't move the marker without re-checking
     # that). This is the same value rdb_iterator_debug.log's "thd=" field
     # logs as this connection's THD::thread_id() -- confirmed identical via
@@ -1297,8 +1284,7 @@ done
 # leaves no trace anywhere else in this results directory. On NVMeVirt-backed
 # datadirs (/mnt/nvme) this file is also the ONLY copy: that filesystem gets
 # wiped by nvmev's mount.sh on every guest reboot, so without this copy the
-# log is unrecoverable once the guest restarts (confirmed the hard way --
-# see project_flax_integration_status memory, 20260722_053825 run).
+# log is unrecoverable once the guest restarts (confirmed the hard way).
 log_info "Capturing mysqld error log..."
 ERROR_LOG_PATH=$(mysql --socket="$SOCKET" -N -e "SHOW VARIABLES LIKE 'log_error'" 2>/dev/null | awk '{print $2}')
 if [ -n "$ERROR_LOG_PATH" ] && ${BENCH_SUDO-sudo} test -f "$ERROR_LOG_PATH"; then
