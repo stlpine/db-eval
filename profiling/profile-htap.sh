@@ -879,22 +879,10 @@ SQL
     # every run -- it genuinely executes, so downstream measurements stay real.
     QUERY_TO_RUN="$JOIN4_CONTENT"
     EXPLAIN_ANALYZE_THIS_RUN=false
-    DUP_CHECK_QUERIES=""
     if [ "${HTAP_DIAGNOSE_RUN0:-false}" = "true" ]; then
         QUERY_TO_RUN="EXPLAIN ANALYZE ${JOIN4_CONTENT}"
         EXPLAIN_ANALYZE_THIS_RUN=true
         log_info "  Run ${RUN}: capturing EXPLAIN ANALYZE"
-        # Same-connection MVCC duplicate check: COUNT(*) vs COUNT(DISTINCT id)
-        # catches version leakage; the k histogram catches join-cardinality skew.
-        DUP_CHECK_QUERIES="SELECT 'DUP_CHECK_SPLIT' AS dup_marker;
-SELECT COUNT(*) AS total_rows, COUNT(DISTINCT id) AS distinct_ids FROM sbtest1;
-SELECT COUNT(*) AS total_rows, COUNT(DISTINCT id) AS distinct_ids FROM sbtest2;
-SELECT COUNT(*) AS total_rows, COUNT(DISTINCT id) AS distinct_ids FROM sbtest3;
-SELECT COUNT(*) AS total_rows, COUNT(DISTINCT id) AS distinct_ids FROM sbtest4;
-SELECT k, COUNT(*) AS n FROM sbtest1 GROUP BY k ORDER BY n DESC LIMIT 20;
-SELECT k, COUNT(*) AS n FROM sbtest2 GROUP BY k ORDER BY n DESC LIMIT 20;
-SELECT k, COUNT(*) AS n FROM sbtest3 GROUP BY k ORDER BY n DESC LIMIT 20;
-SELECT k, COUNT(*) AS n FROM sbtest4 GROUP BY k ORDER BY n DESC LIMIT 20;"
     fi
 
     # Run the analytical query. information_schema.rocksdb_perf_context is
@@ -984,7 +972,6 @@ SHOW SESSION STATUS LIKE 'Handler_read_first';
 SHOW SESSION STATUS LIKE 'Handler_read_next';
 SHOW SESSION STATUS LIKE 'Handler_read_rnd_next';
 SELECT 'CONN_ID_MARKER' AS marker, CONNECTION_ID() AS olap_connection_id;
-${DUP_CHECK_QUERIES}
 SQL
         )
     else
@@ -1018,22 +1005,13 @@ SQL
         [ -s "${RESULT_DIR}/explain_analyze_run${RUN}.txt" ] || \
             log_error "  WARNING: explain_analyze_run${RUN}.txt is empty -- check raw_output_debug_run${RUN}.txt"
         log_info "  Run ${RUN}: EXPLAIN ANALYZE saved to ${RESULT_DIR}/explain_analyze_run${RUN}.txt"
-
-        # Runs after CONN_ID_MARKER so it can't inflate the metrics captured above it.
-        echo "$raw_output" | awk '/^DUP_CHECK_SPLIT/{f=1;next} f{print}' \
-            > "${RESULT_DIR}/mvcc_dup_check_run${RUN}.txt"
-        [ -s "${RESULT_DIR}/mvcc_dup_check_run${RUN}.txt" ] || \
-            log_error "  WARNING: mvcc_dup_check_run${RUN}.txt is empty"
-        log_info "  Run ${RUN}: MVCC duplicate check saved to ${RESULT_DIR}/mvcc_dup_check_run${RUN}.txt"
     fi
 
     # This run's own MySQL CONNECTION_ID(), captured via the CONN_ID_MARKER
-    # SELECT. Only DUP_CHECK_QUERIES may trail it (content-matched, doesn't
-    # affect anything captured earlier) -- moving CONN_ID_MARKER itself
+    # SELECT -- must stay the last statement in every heredoc above (moving it
     # earlier would shift NR==1 for _ctx_delta's header-detection awk below
-    # and silently zero out every perf-context metric (confirmed by tracing
-    # that awk before adding this; don't move the marker without re-checking
-    # that). This is the same value rdb_iterator_debug.log's "thd=" field
+    # and silently zero out every perf-context metric; confirmed by tracing
+    # that awk before adding this). This is the same value rdb_iterator_debug.log's "thd=" field
     # logs as this connection's THD::thread_id() -- confirmed identical via
     # sql_class.cc (CONNECTION_ID() returns pseudo_thread_id, initialized to
     # exactly m_thread_id for any normal connection) -- letting this run's
