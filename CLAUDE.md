@@ -449,3 +449,38 @@ Two deployment environments, each with its own env-override file, both hooked in
   beneath it — treat as a disclosed methodology caveat, not a reason to distrust the
   flamegraphs' function-level attribution. Full investigation:
   `project_flax_integration_status` memory.
+
+### Harness defects found 2026-08-17 (invalidate every prior FLAX HTAP session)
+
+Fixed in `profile-htap.sh` / `env.sh` / `sysbench-htap/prepare.sh`. Listed because
+archived sessions predate the fixes and shouldn't be re-read as valid measurements.
+
+1. **LLTs held no RocksDB snapshot.** The body was `START TRANSACTION; SELECT SLEEP(n)`,
+   and MyRocks acquires the snapshot on the first *table* access, which SLEEP() is not.
+   `llt_count_active` reported 4/4 throughout because it counts client PIDs. Visible in
+   the archived data: `nvmevirt_olap`'s L6 held at 76.07 MB / 2 files from Run 1 to Run 5
+   over 2.5h of OLTP: 197 bytes × 400k rows, i.e. one version per live row. Fixed by
+   reading sbtest1-4 inside the transaction.
+2. **All LLTs opened at once, giving one compaction stripe.** RocksDB retains one version
+   per key per distinct snapshot sequence, so simultaneous LLTs cap retention at 2
+   versions, which after compaction sit in different SST files, where a per-file filter
+   can't see them as duplicates. Hence `nvmevirt_keys_filtered` of 0/3/285/0 against
+   ~1.2M `keys_seen`. Fixed with `HTAP_LLT_STAGGER_SECS`.
+3. **The analytical query never returned a result, in any run of any session.**
+   `mysql --batch` prints a header and row for a successful SELECT; every archived
+   `perf_ctx_raw_run*.txt` goes straight from the pre-query marker to the post-query
+   `ROCKSDB_PERF_CONTEXT` header. `--force` plus a discarded stderr hid the reason, so
+   `elapsed_s` has been time-to-failure. The "Run 1 anomaly" is Run 1 failing at the
+   7200s ceiling while Runs 2-5 fail at ~500s. `rows_scanned` decomposes exactly:
+   400,689 = 4×100,001 + 685, 300,688 = 3×100,001 + 685. Now captured in
+   `olap_query_stderr_run<N>.txt`, `olap_result_run<N>.txt`, and a `query_ok` column.
+4. **The join key exploded the query and OLTP kept moving it.** `join4.sql`'s output is
+   Σ over k of n1(k)n2(k)n3(k)n4(k); `prepare.sh` never passed `--rand-type`, so k used
+   sysbench's default `special` (75% of values in 1% of the range) → ~1e10 rows, leaving
+   the query almost entirely in the hash join (400,689 handler reads in ~500s, ~380 MB of
+   RocksDB reads against ~6 GB/run of spill I/O). `index_updates`/`delete_inserts` rewrite
+   k during the timed query. Fixed via `HTAP_JOIN_KEY_RAND_TYPE`,
+   `HTAP_OLTP_INDEX_UPDATES=0`, `HTAP_OLTP_DELETE_INSERTS=0`.
+
+`scripts/flax-preflight.sh` checks all of the above in ~10 minutes against a running
+instance. Every one of these was visible from `information_schema` alone.
