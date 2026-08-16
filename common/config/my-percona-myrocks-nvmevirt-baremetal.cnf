@@ -35,7 +35,7 @@ rocksdb_cache_index_and_filter_blocks = false
 # rocksdb_nvmevirt_max_sst_bytes offload cap (256MB default).
 rocksdb_default_cf_options = compression=kNoCompression;block_based_table_factory={filter_policy=bloomfilter:10:false;whole_key_filtering=1}
 rocksdb_allow_concurrent_memtable_write = ON
-rocksdb_max_open_files = -1
+rocksdb_max_open_files = 8
 
 # Level 1 = count only; profile-htap.sh bumps this for actual profiling runs.
 rocksdb_perf_context_level = 1
