@@ -812,20 +812,18 @@ for RUN in $(seq "$RUN_START" "$HTAP_OLAP_RUNS"); do
         sleep 30
     fi
 
-    # TEMPORARY DIAGNOSTIC, opt-in via HTAP_CLEAR_BLOCK_CACHE_BEFORE_RUN --
-    # shrinks rocksdb_block_cache_size to evict it via LRU pressure then
-    # restores it, so the run starts cold without a restart or touching
-    # LLTs/OLTP. Remove once no longer needed.
-    if [ "$IS_MYROCKS" = "true" ] && [ -n "${HTAP_CLEAR_BLOCK_CACHE_BEFORE_RUN:-}" ] && \
-       [ "$RUN" = "$HTAP_CLEAR_BLOCK_CACHE_BEFORE_RUN" ]; then
+    # Every run measures cold storage reads, not cache hits. Run 1 already
+    # starts cold via start_mysql_cold(); reset both cache layers before
+    # every later run too.
+    if [ "$IS_MYROCKS" = "true" ] && [ "$RUN" -gt 1 ]; then
+        drop_page_cache
         orig_cache_size=$(mysql --socket="$SOCKET" -N -e \
             "SELECT @@global.rocksdb_block_cache_size;" 2>/dev/null)
-        log_info "Clearing RocksDB block cache before run ${RUN} (shrink from ${orig_cache_size} to 1024 bytes, then restore)..."
         mysql --socket="$SOCKET" -e "SET GLOBAL rocksdb_block_cache_size = 1024;" 2>/dev/null || \
             log_error "  WARNING: block cache shrink failed before run ${RUN}"
         mysql --socket="$SOCKET" -e "SET GLOBAL rocksdb_block_cache_size = ${orig_cache_size};" 2>/dev/null || \
             log_error "  WARNING: block cache restore failed before run ${RUN}"
-        log_info "Block cache cleared (capacity restored to ${orig_cache_size})"
+        log_info "Cold start before run ${RUN}: page cache dropped, block cache cleared (restored to ${orig_cache_size})"
     fi
 
     # InnoDB: snapshot global status before query
