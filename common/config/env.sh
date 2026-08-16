@@ -107,12 +107,24 @@ export SYSBENCH_TPCC_USE_FK="0"           # Disable foreign keys for fair MyRock
 export HTAP_TABLES="12"                  # Tables (AIDE: 12)
 export HTAP_TABLE_SIZE="100000"          # Rows per table (AIDE: 100k)
 export HTAP_OLTP_THREADS="24"            # Concurrent update workers (AIDE: 24)
-export HTAP_LLT_COUNT="4"               # Long-lived transactions holding GC back (LLT paper: 4)
-export HTAP_WARMUP_DURATION="60"         # Warmup before analytical phase (seconds)
+# RocksDB keeps one version per key per distinct snapshot sequence, so N staggered
+# LLTs retain up to N+1 versions. Opening them all at once gives just one.
+export HTAP_LLT_COUNT="4"                # Long-lived transactions holding GC back (LLT paper: 4)
+export HTAP_LLT_STAGGER_SECS="60"        # Gap between consecutive LLT snapshots (0 = all at once)
+export HTAP_WARMUP_DURATION="240"        # Warmup before analytical phase (seconds); covers HTAP_LLT_COUNT * stagger
 export HTAP_DURATION="600"               # Total analytical window duration (seconds)
 export HTAP_CTX_INTERVAL="30"            # Perf context snapshot interval (seconds)
 export HTAP_OLAP_RUNS="5"               # Analytical query runs per session
 export HTAP_JOIN_CUTOFF="90000"          # Default k <= cutoff (~90% selectivity)
+# join4.sql's output is SUM over k of n1(k)*n2(k)*n3(k)*n4(k), so a skewed k (sysbench's
+# default 'special' puts 75% of values in 1% of the range) explodes it to ~1e10 rows and
+# the query stops being scan-bound. Uniform keeps it ~O(table_size).
+export HTAP_JOIN_KEY_RAND_TYPE="uniform" # sysbench --rand-type used at PREPARE time (sets k's distribution)
+# index_updates and delete_inserts both rewrite k, moving the join key under the timed
+# query. non_index_updates still generates the MVCC versions the offload targets.
+export HTAP_OLTP_INDEX_UPDATES="0"       # sysbench --index_updates (0 = leave k alone)
+export HTAP_OLTP_DELETE_INSERTS="0"      # sysbench --delete_inserts (0 = leave k alone)
+export HTAP_OLTP_NON_INDEX_UPDATES="2"   # sysbench --non_index_updates (version generation)
 export HTAP_SELECTIVITY_CUTOFFS="1000 10000 30000 60000 90000"  # Selectivity sweep
 export HTAP_QUERY_TIMEOUT="7200"         # Max seconds per analytical query (MySQL max_execution_time)
 export HTAP_PERF_DURATION="120"          # Seconds of actual recording per OLAP run (flamegraph sample window)

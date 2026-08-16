@@ -73,12 +73,15 @@ mysql --socket="$SOCKET" -e "FLUSH PRIVILEGES;"
 log_info "Running sysbench prepare (${HTAP_TABLES} tables x ${HTAP_TABLE_SIZE} rows)..."
 START_TIME=$(date +%s)
 
+# --rand-type sets the distribution of k, which is what join4.sql joins on. sysbench's
+# default ('special') is skewed enough to blow the 4-way join up to ~1e10 rows.
 sysbench oltp_read_write \
     --mysql-socket="$SOCKET" \
     --mysql-db="$BENCHMARK_DB" \
     --mysql-storage-engine="$STORAGE_ENGINE" \
     --tables="$HTAP_TABLES" \
     --table-size="$HTAP_TABLE_SIZE" \
+    --rand-type="${HTAP_JOIN_KEY_RAND_TYPE:-uniform}" \
     prepare || {
     log_error "Sysbench prepare failed"
     exit 1

@@ -172,6 +172,21 @@ capture_data_profile() {
     log_info "Data profile saved to: ${result_dir}/data_profile.csv"
 }
 
+# SST entries per live row in sbtest1-4 -- the average on-disk version chain length.
+# Below ~2.0 there are no redundant versions for the filter to drop. Reads
+# information_schema only, so it doesn't warm the cache the next run wants cold.
+measure_version_amplification() {
+    local live_rows=$(( HTAP_TABLE_SIZE * 4 ))
+    mysql --socket="$SOCKET" -N --batch 2>/dev/null -e "
+        SELECT IFNULL(SUM(f.NUM_ROWS), 0)
+        FROM information_schema.ROCKSDB_INDEX_FILE_MAP f
+        JOIN information_schema.ROCKSDB_DDL d
+          ON d.INDEX_NUMBER = f.INDEX_NUMBER
+        WHERE d.TABLE_SCHEMA = '${BENCHMARK_DB}'
+          AND d.TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4');" \
+        | awk -v live="$live_rows" 'NR==1{printf "%d %.3f\n", $1, (live>0 ? $1/live : 0)}'
+}
+
 # capture_index_ddl_map: index_number -> (table, index, CF) mapping, needed to
 # decode /tmp/rdb_iterator_debug.log's iterator-recreation events -- that log
 # only has cf/index_number (no table name available at that point in the
@@ -355,19 +370,19 @@ MYSQL_LIB_PATH=$(mysql_config --variable=pkglibdir 2>/dev/null || true)
 # ── Initialise CSVs ───────────────────────────────────────────────────────────
 
 if [ "$ENGINE" = "percona-myrocks" ]; then
-    echo "run,elapsed_s,cutoff,rows_scanned,internal_key_skipped_count_delta,internal_delete_skipped_count_delta,get_snapshot_time_ns_delta,block_read_count_delta,block_read_byte_delta,block_read_time_ns_delta,get_from_memtable_count_delta,get_from_output_files_time_ns_delta" \
+    echo "run,query_ok,elapsed_s,cutoff,rows_scanned,sst_entries,version_amp,internal_key_skipped_count_delta,internal_delete_skipped_count_delta,get_snapshot_time_ns_delta,block_read_count_delta,block_read_byte_delta,block_read_time_ns_delta,get_from_memtable_count_delta,get_from_output_files_time_ns_delta" \
         > "${RESULT_DIR}/htap_olap_runs.csv"
 elif [ "$ENGINE" = "percona-myrocks-csd" ]; then
-    echo "run,elapsed_s,cutoff,rows_scanned,internal_key_skipped_count_delta,internal_delete_skipped_count_delta,get_snapshot_time_ns_delta,block_read_count_delta,block_read_byte_delta,block_read_time_ns_delta,get_from_memtable_count_delta,get_from_output_files_time_ns_delta,csd_keys_seen,csd_keys_filtered,csd_freeze_ns" \
+    echo "run,query_ok,elapsed_s,cutoff,rows_scanned,sst_entries,version_amp,internal_key_skipped_count_delta,internal_delete_skipped_count_delta,get_snapshot_time_ns_delta,block_read_count_delta,block_read_byte_delta,block_read_time_ns_delta,get_from_memtable_count_delta,get_from_output_files_time_ns_delta,csd_keys_seen,csd_keys_filtered,csd_freeze_ns" \
         > "${RESULT_DIR}/htap_olap_runs.csv"
 elif [ "$ENGINE" = "percona-myrocks-nvmevirt" ]; then
     # No freeze_ns column -- FLAX's v1 offload only blocks the calling mysqld
     # thread on its own SST read, not the whole guest, so there's no
     # equivalent counter to report.
-    echo "run,elapsed_s,cutoff,rows_scanned,internal_key_skipped_count_delta,internal_delete_skipped_count_delta,get_snapshot_time_ns_delta,block_read_count_delta,block_read_byte_delta,block_read_time_ns_delta,get_from_memtable_count_delta,get_from_output_files_time_ns_delta,nvmevirt_keys_seen,nvmevirt_keys_filtered" \
+    echo "run,query_ok,elapsed_s,cutoff,rows_scanned,sst_entries,version_amp,internal_key_skipped_count_delta,internal_delete_skipped_count_delta,get_snapshot_time_ns_delta,block_read_count_delta,block_read_byte_delta,block_read_time_ns_delta,get_from_memtable_count_delta,get_from_output_files_time_ns_delta,nvmevirt_keys_seen,nvmevirt_keys_filtered" \
         > "${RESULT_DIR}/htap_olap_runs.csv"
 else
-    echo "run,elapsed_s,cutoff,rows_scanned,handler_read_key,innodb_rows_read_delta,innodb_buffer_pool_reads_delta,innodb_buffer_pool_read_requests_delta,innodb_pages_read_delta,innodb_data_reads_delta,innodb_data_read_bytes_delta" \
+    echo "run,query_ok,elapsed_s,cutoff,rows_scanned,handler_read_key,innodb_rows_read_delta,innodb_buffer_pool_reads_delta,innodb_buffer_pool_read_requests_delta,innodb_pages_read_delta,innodb_data_reads_delta,innodb_data_read_bytes_delta" \
         > "${RESULT_DIR}/htap_olap_runs.csv"
 fi
 
@@ -512,6 +527,15 @@ if [ "${HTAP_DIAGNOSE_RUN0:-false}" = "true" ]; then
 fi
 EFFECTIVE_OLAP_RUNS=$(( HTAP_OLAP_RUNS + (RUN_START == 0 ? 1 : 0) ))
 FLUSH_SETTLE_OVERHEAD=$(( 30 * (EFFECTIVE_OLAP_RUNS - 1) ))
+
+# Warmup has to outlast the LLT staggering window, or early runs see fewer pinned
+# snapshots than later ones and differ in retained versions for no useful reason.
+LLT_STAGGER_WINDOW=$(( HTAP_LLT_COUNT * ${HTAP_LLT_STAGGER_SECS:-0} ))
+if [ "$HTAP_WARMUP_DURATION" -lt "$LLT_STAGGER_WINDOW" ]; then
+    log_info "HTAP_WARMUP_DURATION=${HTAP_WARMUP_DURATION}s is shorter than the LLT staggering window (${LLT_STAGGER_WINDOW}s), extending it so every OLAP run sees all ${HTAP_LLT_COUNT} snapshots"
+    HTAP_WARMUP_DURATION=$LLT_STAGGER_WINDOW
+fi
+
 LLT_SLEEP_DURATION=$(( HTAP_WARMUP_DURATION + EFFECTIVE_OLAP_RUNS * HTAP_QUERY_TIMEOUT + FLUSH_SETTLE_OVERHEAD ))
 
 # Log configuration
@@ -544,6 +568,10 @@ CONFIG_LOG="${RESULT_DIR}/profiling_config.log"
     echo "HTAP_TABLE_SIZE: $HTAP_TABLE_SIZE"
     echo "HTAP_OLTP_THREADS: $HTAP_OLTP_THREADS"
     echo "HTAP_LLT_COUNT: $HTAP_LLT_COUNT"
+    echo "HTAP_LLT_STAGGER_SECS: ${HTAP_LLT_STAGGER_SECS:-0}"
+    echo "HTAP_OLTP_INDEX_UPDATES: ${HTAP_OLTP_INDEX_UPDATES:-1} (0 = join key k frozen after prepare)"
+    echo "HTAP_OLTP_DELETE_INSERTS: ${HTAP_OLTP_DELETE_INSERTS:-1}"
+    echo "HTAP_OLTP_NON_INDEX_UPDATES: ${HTAP_OLTP_NON_INDEX_UPDATES:-1}"
     echo "HTAP_WARMUP_DURATION: $HTAP_WARMUP_DURATION"
     echo "HTAP_DURATION: $HTAP_DURATION"
     echo "HTAP_CTX_INTERVAL: $HTAP_CTX_INTERVAL"
@@ -629,6 +657,9 @@ sysbench oltp_read_write \
     --threads="$HTAP_OLTP_THREADS" \
     --time="$OLTP_TOTAL" \
     --rand-type=pareto \
+    --index_updates="${HTAP_OLTP_INDEX_UPDATES:-1}" \
+    --delete_inserts="${HTAP_OLTP_DELETE_INSERTS:-1}" \
+    --non_index_updates="${HTAP_OLTP_NON_INDEX_UPDATES:-1}" \
     --report-interval=10 \
     --db-ps-mode=disable \
     run > "${RESULT_DIR}/sysbench_htap_oltp.txt" 2>&1 &
@@ -637,27 +668,40 @@ log_info "OLTP sysbench PID: $SB_PID"
 
 # ── Phase 4: Open Long-Lived Transactions ─────────────────────────────────────
 
-log_info "Opening ${HTAP_LLT_COUNT} long-lived transactions (LLTs)..."
+log_info "Opening ${HTAP_LLT_COUNT} long-lived transactions (LLTs), staggered ${HTAP_LLT_STAGGER_SECS:-0}s apart..."
 LLT_PIDS=()
+LLT_STAGGER=${HTAP_LLT_STAGGER_SECS:-0}
 for (( i=1; i<=HTAP_LLT_COUNT; i++ )); do
-    # Each LLT: SET REPEATABLE READ, extend timeouts, START TRANSACTION, SLEEP.
     # wait_timeout covers idle connections; net_read_timeout/net_write_timeout
     # cover active long-running queries (SELECT SLEEP is an active query).
-    # All three are set for belt-and-suspenders coverage.
+    #
+    # The reads before the sleep are load-bearing: MyRocks acquires the snapshot on
+    # the transaction's first table access, so the old `START TRANSACTION;
+    # SELECT SLEEP(n)` body pinned nothing at all. The leading sleep staggers each
+    # snapshot onto a distinct sequence number -- simultaneous LLTs share one
+    # compaction stripe, which caps retention at 2 versions per key.
+    llt_offset=$(( (i - 1) * LLT_STAGGER ))
+    llt_remaining=$(( LLT_SLEEP_DURATION - llt_offset ))
+    [ "$llt_remaining" -lt 1 ] && llt_remaining=1
     mysql --socket="$SOCKET" "$BENCHMARK_DB" \
         --batch --force 2>/dev/null <<SQL &
 SET SESSION transaction_isolation='REPEATABLE-READ';
 SET SESSION wait_timeout=86400;
 SET SESSION net_read_timeout=86400;
 SET SESSION net_write_timeout=86400;
+SELECT SLEEP(${llt_offset});
 START TRANSACTION;
-SELECT SLEEP(${LLT_SLEEP_DURATION});
+SELECT COUNT(*) FROM sbtest1 WHERE id < 2;
+SELECT COUNT(*) FROM sbtest2 WHERE id < 2;
+SELECT COUNT(*) FROM sbtest3 WHERE id < 2;
+SELECT COUNT(*) FROM sbtest4 WHERE id < 2;
+SELECT SLEEP(${llt_remaining});
 ROLLBACK;
 SQL
     LLT_PIDS+=($!)
-    log_info "  LLT $i PID: ${LLT_PIDS[-1]}"
+    log_info "  LLT $i PID: ${LLT_PIDS[-1]} (snapshot at t+${llt_offset}s)"
 done
-log_info "LLTs opened (hold GC snapshot at current sequence number)"
+log_info "LLTs launched; all ${HTAP_LLT_COUNT} snapshots in place by t+$(( (HTAP_LLT_COUNT - 1) * LLT_STAGGER ))s"
 
 # ── Phase 5: Warmup ───────────────────────────────────────────────────────────
 
@@ -856,6 +900,14 @@ EXPLAIN FORMAT=TREE ${JOIN4_CONTENT}
 SQL
         mysql --socket="$SOCKET" --batch --skip-column-names 2>/dev/null \
             -e "SHOW ENGINE ROCKSDB STATUS;" > "${RESULT_DIR}/rocksdb_status_run${RUN}_before.txt"
+
+        read -r sst_entries version_amp <<<"$(measure_version_amplification)"
+        log_info "  Run ${RUN}: offload-CF SST entries=${sst_entries:-0} for $(( HTAP_TABLE_SIZE * 4 )) live rows (version amplification ${version_amp:-0}x)"
+        if awk "BEGIN{exit !(${version_amp:-0} < 2.0)}"; then
+            log_error "  WARNING: version amplification ${version_amp:-0}x, so there are essentially no redundant versions on disk."
+            log_error "           An SST-level MVCC filter has nothing to drop; keys_filtered will be ~0 regardless of the device."
+            log_error "           Check that the LLTs are actually holding RocksDB snapshots (SHOW ENGINE ROCKSDB STATUS / ROCKSDB_TRX)."
+        fi
     fi
 
     # Memory snapshot going into this run -- see snapshot_memory_state's own
@@ -894,7 +946,7 @@ SQL
         # Query with SELECT * filtered to the four join tables; _ctx_delta sums VALUE
         # where STAT_TYPE matches the requested metric name.
         raw_output=$(mysql --socket="$SOCKET" "$BENCHMARK_DB" \
-            --batch --force 2>/dev/null <<SQL
+            --batch --force 2>"${RESULT_DIR}/olap_query_stderr_run${RUN}.txt" <<SQL
 SET SESSION transaction_isolation='REPEATABLE-READ';
 SET SESSION rocksdb_perf_context_level=${PROFILING_PERF_CONTEXT_LEVEL};
 SET SESSION max_execution_time=$((HTAP_QUERY_TIMEOUT * 1000));
@@ -904,7 +956,9 @@ WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
   AND TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4');
 SELECT 'CTX_SPLIT' AS ctx_marker;
 FLUSH STATUS;
+SELECT 'QUERY_BEGIN' AS q_marker;
 ${QUERY_TO_RUN}
+SELECT 'QUERY_END' AS q_marker;
 SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
 WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
   AND TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4');
@@ -916,7 +970,7 @@ SQL
         )
     elif [ "$ENGINE" = "percona-myrocks-csd" ]; then
         raw_output=$(mysql --socket="$SOCKET" "$BENCHMARK_DB" \
-            --batch --force 2>/dev/null <<SQL
+            --batch --force 2>"${RESULT_DIR}/olap_query_stderr_run${RUN}.txt" <<SQL
 SET SESSION transaction_isolation='REPEATABLE-READ';
 SET SESSION rocksdb_perf_context_level=${PROFILING_PERF_CONTEXT_LEVEL};
 SET SESSION max_execution_time=$((HTAP_QUERY_TIMEOUT * 1000));
@@ -929,7 +983,9 @@ SHOW GLOBAL STATUS LIKE 'Rocksdb_cemu_keys%';
 SHOW GLOBAL STATUS LIKE 'Rocksdb_cemu_freeze%';
 SELECT 'CSD_SPLIT' AS csd_marker;
 FLUSH STATUS;
+SELECT 'QUERY_BEGIN' AS q_marker;
 ${QUERY_TO_RUN}
+SELECT 'QUERY_END' AS q_marker;
 SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
 WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
   AND TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4');
@@ -948,7 +1004,7 @@ SQL
         # threads off g_nvmevirt_exec_mutex; rocksdb_nvmevirt_enabled (GLOBAL,
         # set earlier) is still required too.
         raw_output=$(mysql --socket="$SOCKET" "$BENCHMARK_DB" \
-            --batch --force 2>/dev/null <<SQL
+            --batch --force 2>"${RESULT_DIR}/olap_query_stderr_run${RUN}.txt" <<SQL
 SET SESSION transaction_isolation='REPEATABLE-READ';
 SET SESSION rocksdb_perf_context_level=${PROFILING_PERF_CONTEXT_LEVEL};
 SET SESSION max_execution_time=$((HTAP_QUERY_TIMEOUT * 1000));
@@ -961,7 +1017,9 @@ SELECT 'CTX_SPLIT' AS ctx_marker;
 SHOW GLOBAL STATUS LIKE 'Rocksdb_nvmevirt_keys%';
 SELECT 'CSD_SPLIT' AS csd_marker;
 FLUSH STATUS;
+SELECT 'QUERY_BEGIN' AS q_marker;
 ${QUERY_TO_RUN}
+SELECT 'QUERY_END' AS q_marker;
 SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
 WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
   AND TABLE_NAME IN ('sbtest1','sbtest2','sbtest3','sbtest4');
@@ -974,12 +1032,14 @@ SQL
         )
     else
         raw_output=$(mysql --socket="$SOCKET" "$BENCHMARK_DB" \
-            --batch --skip-column-names --force 2>/dev/null <<SQL
+            --batch --skip-column-names --force 2>"${RESULT_DIR}/olap_query_stderr_run${RUN}.txt" <<SQL
 SET SESSION transaction_isolation='REPEATABLE-READ';
 SET SESSION max_execution_time=$((HTAP_QUERY_TIMEOUT * 1000));
 SET @htap_cutoff = ${CUTOFF};
 FLUSH STATUS;
+SELECT 'QUERY_BEGIN' AS q_marker;
 ${JOIN4_CONTENT}
+SELECT 'QUERY_END' AS q_marker;
 SHOW SESSION STATUS LIKE 'Handler_read_first';
 SHOW SESSION STATUS LIKE 'Handler_read_next';
 SHOW SESSION STATUS LIKE 'Handler_read_rnd_next';
@@ -992,13 +1052,33 @@ SQL
     elapsed=$(echo "$end_time - $start_time" | bc)
     PERF_ELAPSED[$RUN]=$elapsed
 
+    # Did the query actually produce an answer? No archived session's output has a
+    # result row between the markers, which means elapsed has been measuring
+    # time-to-failure -- `--force` plus a discarded stderr hid the reason.
+    query_result=$(echo "$raw_output" \
+        | awk '/^QUERY_BEGIN/{f=1;next} /^QUERY_END/{exit} f && !/^q_marker$/' | tail -1)
+    if [ -n "$query_result" ]; then
+        query_ok=1
+        echo "$query_result" > "${RESULT_DIR}/olap_result_run${RUN}.txt"
+        log_info "  Run ${RUN}: query returned ${query_result}"
+    else
+        query_ok=0
+        log_error "  ERROR: run ${RUN} produced NO result row; the analytical query did not complete."
+        log_error "         elapsed=${elapsed}s is time-to-failure, not query time. Do not compare it."
+        if [ -s "${RESULT_DIR}/olap_query_stderr_run${RUN}.txt" ]; then
+            log_error "         client stderr: $(head -3 "${RESULT_DIR}/olap_query_stderr_run${RUN}.txt" | tr '\n' ' ')"
+        else
+            log_error "         client stderr was empty; check max_execution_time (${HTAP_QUERY_TIMEOUT}s) and mysqld_error.log"
+        fi
+    fi
+
     # Extract the EXPLAIN ANALYZE tree (actual per-operator row counts/
     # timings/loop counts). It sits between the CSD_SPLIT marker and the
     # next TABLE_SCHEMA header (the ctx_after ROCKSDB_PERF_CONTEXT query).
     if [ "$EXPLAIN_ANALYZE_THIS_RUN" = "true" ]; then
         # TEMPORARY debug dump -- remove once the extraction below is confirmed reliable.
         echo "$raw_output" > "${RESULT_DIR}/raw_output_debug_run${RUN}.txt"
-        echo "$raw_output" | awk '/^CSD_SPLIT/{f=1;next} f&&/^TABLE_SCHEMA/{exit} f{print}' \
+        echo "$raw_output" | awk '/^QUERY_BEGIN/{f=1;next} /^QUERY_END/{exit} f&&/^q_marker/{next} f{print}' \
             > "${RESULT_DIR}/explain_analyze_run${RUN}.txt"
         [ -s "${RESULT_DIR}/explain_analyze_run${RUN}.txt" ] || \
             log_error "  WARNING: explain_analyze_run${RUN}.txt is empty -- check raw_output_debug_run${RUN}.txt"
@@ -1175,19 +1255,19 @@ SQL
             printf "  run=%d elapsed=%.1fs | rows_scanned=%s | key_skipped=%s | csd_filtered=%s/%s (ratio=%s) | freeze_ns=%s | llt_alive=%d\n" \
                 "$RUN" "$elapsed" "$rows_scanned" "${iksc_delta:-0}" \
                 "${csd_filt_delta:-0}" "${csd_seen_delta:-0}" "$csd_ratio" "${csd_freeze_delta:-0}" "$llt_alive"
-            echo "${RUN},${elapsed},${CUTOFF},${rows_scanned},${iksc_delta:-0},${idsc_delta:-0},${gst_delta:-0},${brc_delta:-0},${brb_delta:-0},${brt_delta:-0},${gfmc_delta:-0},${gfoft_delta:-0},${csd_seen_delta:-0},${csd_filt_delta:-0},${csd_freeze_delta:-0}" \
+            echo "${RUN},${query_ok},${elapsed},${CUTOFF},${rows_scanned},${sst_entries:-0},${version_amp:-0},${iksc_delta:-0},${idsc_delta:-0},${gst_delta:-0},${brc_delta:-0},${brb_delta:-0},${brt_delta:-0},${gfmc_delta:-0},${gfoft_delta:-0},${csd_seen_delta:-0},${csd_filt_delta:-0},${csd_freeze_delta:-0}" \
                 >> "${RESULT_DIR}/htap_olap_runs.csv"
         elif [ "$IS_NVMEVIRT" = "true" ]; then
             nv_ratio=$(awk "BEGIN{s=${nv_seen_delta:-0}; if(s>0) printf \"%.3f\", ${nv_filt_delta:-0}/s; else print \"N/A\"}")
             printf "  run=%d elapsed=%.1fs | rows_scanned=%s | key_skipped=%s | nvmevirt_filtered=%s/%s (ratio=%s) | llt_alive=%d\n" \
                 "$RUN" "$elapsed" "$rows_scanned" "${iksc_delta:-0}" \
                 "${nv_filt_delta:-0}" "${nv_seen_delta:-0}" "$nv_ratio" "$llt_alive"
-            echo "${RUN},${elapsed},${CUTOFF},${rows_scanned},${iksc_delta:-0},${idsc_delta:-0},${gst_delta:-0},${brc_delta:-0},${brb_delta:-0},${brt_delta:-0},${gfmc_delta:-0},${gfoft_delta:-0},${nv_seen_delta:-0},${nv_filt_delta:-0}" \
+            echo "${RUN},${query_ok},${elapsed},${CUTOFF},${rows_scanned},${sst_entries:-0},${version_amp:-0},${iksc_delta:-0},${idsc_delta:-0},${gst_delta:-0},${brc_delta:-0},${brb_delta:-0},${brt_delta:-0},${gfmc_delta:-0},${gfoft_delta:-0},${nv_seen_delta:-0},${nv_filt_delta:-0}" \
                 >> "${RESULT_DIR}/htap_olap_runs.csv"
         else
             printf "  run=%d elapsed=%.1fs | rows_scanned=%s | key_skipped=%s | block_reads=%s | llt_alive=%d\n" \
                 "$RUN" "$elapsed" "$rows_scanned" "${iksc_delta:-0}" "${brc_delta:-0}" "$llt_alive"
-            echo "${RUN},${elapsed},${CUTOFF},${rows_scanned},${iksc_delta:-0},${idsc_delta:-0},${gst_delta:-0},${brc_delta:-0},${brb_delta:-0},${brt_delta:-0},${gfmc_delta:-0},${gfoft_delta:-0}" \
+            echo "${RUN},${query_ok},${elapsed},${CUTOFF},${rows_scanned},${sst_entries:-0},${version_amp:-0},${iksc_delta:-0},${idsc_delta:-0},${gst_delta:-0},${brc_delta:-0},${brb_delta:-0},${brt_delta:-0},${gfmc_delta:-0},${gfoft_delta:-0}" \
                 >> "${RESULT_DIR}/htap_olap_runs.csv"
         fi
     else
@@ -1209,7 +1289,7 @@ SQL
         inno_data_bytes=$(_delta "Innodb_data_read")
         printf "  run=%d elapsed=%.1fs | rows_scanned=%s | bp_reads=%s | llt_alive=%d\n" \
             "$RUN" "$elapsed" "$rows_scanned" "${inno_bp_reads:-0}" "$llt_alive"
-        echo "${RUN},${elapsed},${CUTOFF},${rows_scanned},${h_key:-0},${inno_rows:-0},${inno_bp_reads:-0},${inno_bp_req:-0},${inno_pages:-0},${inno_data_reads:-0},${inno_data_bytes:-0}" \
+        echo "${RUN},${query_ok},${elapsed},${CUTOFF},${rows_scanned},${h_key:-0},${inno_rows:-0},${inno_bp_reads:-0},${inno_bp_req:-0},${inno_pages:-0},${inno_data_reads:-0},${inno_data_bytes:-0}" \
             >> "${RESULT_DIR}/htap_olap_runs.csv"
     fi
 
