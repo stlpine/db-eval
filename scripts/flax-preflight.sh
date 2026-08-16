@@ -14,6 +14,9 @@
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Set this here rather than inheriting whatever the calling shell happens to have, so
+# the socket/datadir don't depend on a variable left over from an earlier command.
+export FLAX_BAREMETAL_ENV="${FLAX_BAREMETAL_ENV:-${SCRIPT_DIR}/../common/config/env-flax-baremetal.sh}"
 source "${SCRIPT_DIR}/../common/config/env.sh"
 
 ENGINE="${1:-percona-myrocks-nvmevirt}"
@@ -29,6 +32,8 @@ hr() { printf '%s\n' "----------------------------------------------------------
 
 if ! mysqladmin --socket="$SOCKET" ping &>/dev/null; then
     echo "mysqld is not reachable on $SOCKET" >&2
+    echo "start it with:  sudo -E bash ${SCRIPT_DIR}/mysql-control.sh ${ENGINE} start" >&2
+    echo "(the device must be mounted first: mountpoint -q /mnt/nvme)" >&2
     exit 1
 fi
 
