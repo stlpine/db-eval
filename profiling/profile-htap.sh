@@ -810,6 +810,8 @@ log_info "Snapshot loop PID: $SNAPSHOT_PID"
 # ── Phase 7: Analytical query profiling loop ──────────────────────────────────
 
 JOIN4_CONTENT=$(cat "$JOIN4_SQL")
+MAX_JOIN_SIZE_SQL=""
+[ -n "${HTAP_MAX_JOIN_SIZE:-}" ] && MAX_JOIN_SIZE_SQL="SET SESSION max_join_size=${HTAP_MAX_JOIN_SIZE};"
 
 log_info "Starting OLAP profiling loop (${HTAP_OLAP_RUNS} runs$([ "$RUN_START" -eq 0 ] && echo " + diagnostic Run 0"), cutoff=${CUTOFF})..."
 
@@ -950,6 +952,7 @@ SQL
 SET SESSION transaction_isolation='REPEATABLE-READ';
 SET SESSION rocksdb_perf_context_level=${PROFILING_PERF_CONTEXT_LEVEL};
 SET SESSION max_execution_time=$((HTAP_QUERY_TIMEOUT * 1000));
+${MAX_JOIN_SIZE_SQL}
 SET @htap_cutoff = ${CUTOFF};
 SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
 WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
@@ -974,6 +977,7 @@ SQL
 SET SESSION transaction_isolation='REPEATABLE-READ';
 SET SESSION rocksdb_perf_context_level=${PROFILING_PERF_CONTEXT_LEVEL};
 SET SESSION max_execution_time=$((HTAP_QUERY_TIMEOUT * 1000));
+${MAX_JOIN_SIZE_SQL}
 SET @htap_cutoff = ${CUTOFF};
 SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
 WHERE TABLE_SCHEMA = '${BENCHMARK_DB}'
@@ -1008,6 +1012,7 @@ SQL
 SET SESSION transaction_isolation='REPEATABLE-READ';
 SET SESSION rocksdb_perf_context_level=${PROFILING_PERF_CONTEXT_LEVEL};
 SET SESSION max_execution_time=$((HTAP_QUERY_TIMEOUT * 1000));
+${MAX_JOIN_SIZE_SQL}
 SET SESSION rocksdb_nvmevirt_olap_session=1;
 SET @htap_cutoff = ${CUTOFF};
 SELECT * FROM information_schema.ROCKSDB_PERF_CONTEXT
@@ -1035,6 +1040,7 @@ SQL
             --batch --skip-column-names --force 2>"${RESULT_DIR}/olap_query_stderr_run${RUN}.txt" <<SQL
 SET SESSION transaction_isolation='REPEATABLE-READ';
 SET SESSION max_execution_time=$((HTAP_QUERY_TIMEOUT * 1000));
+${MAX_JOIN_SIZE_SQL}
 SET @htap_cutoff = ${CUTOFF};
 FLUSH STATUS;
 SELECT 'QUERY_BEGIN' AS q_marker;

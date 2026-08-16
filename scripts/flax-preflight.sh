@@ -123,6 +123,7 @@ t0=$(date +%s.%N)
 out=$(mysql --socket="$SOCKET" -u "$DBUSER" "$BENCHMARK_DB" --batch <<SQL
 SET SESSION transaction_isolation='REPEATABLE-READ';
 SET SESSION max_execution_time=${PREFLIGHT_QUERY_TIMEOUT_MS:-600000};
+SET SESSION max_join_size=${HTAP_MAX_JOIN_SIZE:-1000000000000};
 ${OLAP_EXTRA}
 SET @htap_cutoff = ${HTAP_JOIN_CUTOFF};
 ${JOIN4_CONTENT}
