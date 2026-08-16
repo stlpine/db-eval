@@ -105,7 +105,13 @@ Q -e "SELECT f.SST_NAME, f.NUM_ROWS
 hr
 
 # ── 4. Does the query actually complete, and does the offload engage? ────────
+# A hash join that has to spill writes into mysqld's tmpdir, not the datadir, so a
+# small root filesystem there kills the query with ENOSPC long before the timeout.
 echo "[4] One timed analytical query (stderr NOT suppressed)"
+tmpdir=$(Q -e "SELECT @@tmpdir;")
+echo "    mysqld tmpdir: ${tmpdir}"
+df -h "${tmpdir%%:*}" 2>/dev/null | tail -1 | sed 's/^/      /'
+
 JOIN4_SQL="${SCRIPT_DIR}/../sysbench-htap/queries/join4.sql"
 JOIN4_CONTENT=$(cat "$JOIN4_SQL")
 OLAP_EXTRA=""
