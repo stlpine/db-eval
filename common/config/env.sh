@@ -132,8 +132,12 @@ export HTAP_QUERY_TIMEOUT="7200"         # Max seconds per analytical query (MyS
 # died at ENOSPC in ~600s, every run, for months. This makes the optimizer refuse such a
 # plan up front instead. Healthy uniform-k runs estimate ~1e5, far under the bound.
 export HTAP_MAX_JOIN_SIZE="1000000000000" # Reject plans estimating more examined rows (empty = no limit)
-export HTAP_PERF_DURATION="120"          # Seconds of actual recording per OLAP run (flamegraph sample window)
-export HTAP_PERF_DELAY="30"             # Seconds to delay before recording starts (skips query init/build phase)
+# perf is killed as soon as the query returns, so DURATION is only a ceiling. DELAY was
+# sized for the old multi-minute runs; with a feasible join the query finishes in
+# seconds, and any delay at all means recording starts after it is already over.
+export HTAP_PERF_DURATION="120"          # Ceiling on recording per OLAP run (perf is stopped when the query ends)
+export HTAP_PERF_DELAY="0"               # Seconds to delay before recording starts
+export HTAP_PERF_FREQ="499"              # perf sampling frequency (Hz); short runs need more than 49
 export PERF_CALL_GRAPH="dwarf"          # Call graph mode: dwarf (apt perf has libdw) for bare-metal; fp for VM
 export DROP_CACHES_LEVEL="3"            # 3=page+inode caches (bare-metal); 1=page cache only (VM: FDMFS inodes lost with 3)
 

@@ -583,7 +583,7 @@ CONFIG_LOG="${RESULT_DIR}/profiling_config.log"
     echo "Effective cgroup memory limit (actual, this process): $(get_effective_memory_limit self)"
     echo "FLAMEGRAPH_DIR: $FLAMEGRAPH_DIR"
     echo "PERF_EVENT: ${PERF_EVENT}"
-    echo "PERF_FREQ: 49 Hz"
+    echo "PERF_FREQ: ${HTAP_PERF_FREQ:-499} Hz"
     echo "PERF_DELAY: ${HTAP_PERF_DELAY}s (skip query init before recording)"
     echo "PERF_DURATION: ${HTAP_PERF_DURATION}s (steady-state recording window)"
     echo "PERF_CALL_GRAPH: ${PERF_CALL_GRAPH:-dwarf}"
@@ -684,7 +684,7 @@ for (( i=1; i<=HTAP_LLT_COUNT; i++ )); do
     llt_remaining=$(( LLT_SLEEP_DURATION - llt_offset ))
     [ "$llt_remaining" -lt 1 ] && llt_remaining=1
     mysql --socket="$SOCKET" "$BENCHMARK_DB" \
-        --batch --force 2>/dev/null <<SQL &
+        --batch --force >/dev/null 2>&1 <<SQL &
 SET SESSION transaction_isolation='REPEATABLE-READ';
 SET SESSION wait_timeout=86400;
 SET SESSION net_read_timeout=86400;
@@ -905,10 +905,11 @@ SQL
 
         read -r sst_entries version_amp <<<"$(measure_version_amplification)"
         log_info "  Run ${RUN}: offload-CF SST entries=${sst_entries:-0} for $(( HTAP_TABLE_SIZE * 4 )) live rows (version amplification ${version_amp:-0}x)"
-        if awk "BEGIN{exit !(${version_amp:-0} < 2.0)}"; then
-            log_error "  WARNING: version amplification ${version_amp:-0}x, so there are essentially no redundant versions on disk."
-            log_error "           An SST-level MVCC filter has nothing to drop; keys_filtered will be ~0 regardless of the device."
-            log_error "           Check that the LLTs are actually holding RocksDB snapshots (SHOW ENGINE ROCKSDB STATUS / ROCKSDB_TRX)."
+        # Amplification A caps the achievable filter ratio at (A-1)/A, so 2.0x is a
+        # healthy ~0.5 ceiling. Only flag values close to 1.0, where nothing is droppable.
+        if awk "BEGIN{exit !(${version_amp:-0} < 1.2)}"; then
+            log_error "  WARNING: version amplification ${version_amp:-0}x leaves at most $(awk "BEGIN{printf \"%.2f\", (${version_amp:-1}-1)/${version_amp:-1}}") of entries droppable."
+            log_error "           Check that the LLTs are actually holding RocksDB snapshots (ROCKSDB_TRX should be non-zero)."
         fi
     fi
 
@@ -918,7 +919,7 @@ SQL
 
     # Start perf record attached to mysqld
     perf_data="${RESULT_DIR}/perf_htap_run${RUN}.data"
-    ${BENCH_SUDO-sudo} perf record -F 49 -p "$MYSQLD_PID" --call-graph "${PERF_CALL_GRAPH:-dwarf}" \
+    ${BENCH_SUDO-sudo} perf record -F "${HTAP_PERF_FREQ:-499}" -p "$MYSQLD_PID" --call-graph "${PERF_CALL_GRAPH:-dwarf}" \
         -e "${PERF_EVENT}" \
         -D $((HTAP_PERF_DELAY * 1000)) \
         -o "$perf_data" -- sleep $((HTAP_PERF_DURATION + HTAP_PERF_DELAY)) &
