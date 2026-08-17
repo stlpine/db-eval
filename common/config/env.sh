@@ -115,7 +115,9 @@ export HTAP_WARMUP_DURATION="240"        # Warmup before analytical phase (secon
 export HTAP_DURATION="600"               # Total analytical window duration (seconds)
 export HTAP_CTX_INTERVAL="30"            # Perf context snapshot interval (seconds)
 export HTAP_OLAP_RUNS="5"               # Analytical query runs per session
-export HTAP_JOIN_CUTOFF="90000"          # Default k <= cutoff (~90% selectivity)
+# k is generated in [1, HTAP_TABLE_SIZE], so the cutoff has to scale with the table or
+# selectivity silently changes: a fixed 90000 against 2M rows filters to 4.5%, not 90%.
+export HTAP_JOIN_CUTOFF="$(( HTAP_TABLE_SIZE * 9 / 10 ))"  # k <= cutoff (~90% selectivity)
 # join4.sql's output is SUM over k of n1(k)*n2(k)*n3(k)*n4(k), so a skewed k (sysbench's
 # default 'special' puts 75% of values in 1% of the range) explodes it to ~1e10 rows and
 # the query stops being scan-bound. Uniform keeps it ~O(table_size).
