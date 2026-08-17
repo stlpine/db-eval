@@ -107,36 +107,37 @@ export SYSBENCH_TPCC_USE_FK="0"           # Disable foreign keys for fair MyRock
 export HTAP_TABLES="12"                  # Tables (AIDE: 12)
 export HTAP_TABLE_SIZE="100000"          # Rows per table (AIDE: 100k)
 export HTAP_OLTP_THREADS="24"            # Concurrent update workers (AIDE: 24)
-# RocksDB keeps one version per key per distinct snapshot sequence, so N staggered
-# LLTs retain up to N+1 versions. Opening them all at once gives just one.
+# RocksDB keeps one version per key per distinct snapshot, so N staggered LLTs
+# retain up to N+1 versions; opening them all at once gives just one.
 export HTAP_LLT_COUNT="4"                # Long-lived transactions holding GC back (LLT paper: 4)
-export HTAP_LLT_STAGGER_SECS="60"        # Gap between consecutive LLT snapshots (0 = all at once)
-export HTAP_WARMUP_DURATION="240"        # Warmup before analytical phase (seconds); covers HTAP_LLT_COUNT * stagger
+# 240s is roughly how long the average row takes to be updated at this load;
+# shorter windows retain nothing new for most rows.
+export HTAP_LLT_STAGGER_SECS="240"       # Gap between consecutive LLT snapshots (0 = all at once)
+export HTAP_WARMUP_DURATION="960"        # Warmup before analytical phase (seconds); covers HTAP_LLT_COUNT * stagger
 export HTAP_DURATION="600"               # Total analytical window duration (seconds)
 export HTAP_CTX_INTERVAL="30"            # Perf context snapshot interval (seconds)
 export HTAP_OLAP_RUNS="5"               # Analytical query runs per session
-# k is generated in [1, HTAP_TABLE_SIZE], so the cutoff has to scale with the table or
-# selectivity silently changes: a fixed 90000 against 2M rows filters to 4.5%, not 90%.
+# k is generated in [1, HTAP_TABLE_SIZE], so a fixed cutoff would silently change
+# selectivity whenever the table is rescaled.
 export HTAP_JOIN_CUTOFF="$(( HTAP_TABLE_SIZE * 9 / 10 ))"  # k <= cutoff (~90% selectivity)
-# join4.sql's output is SUM over k of n1(k)*n2(k)*n3(k)*n4(k), so a skewed k (sysbench's
-# default 'special' puts 75% of values in 1% of the range) explodes it to ~1e10 rows and
-# the query stops being scan-bound. Uniform keeps it ~O(table_size).
+# join4.sql's output is SUM over k of n1(k)*n2(k)*n3(k)*n4(k); sysbench's default
+# skew explodes that to ~1e16 rows. Uniform keeps it ~O(table_size).
 export HTAP_JOIN_KEY_RAND_TYPE="uniform" # sysbench --rand-type used at PREPARE time (sets k's distribution)
-# index_updates and delete_inserts both rewrite k, moving the join key under the timed
-# query. non_index_updates still generates the MVCC versions the offload targets.
+# index_updates and delete_inserts rewrite k, moving the join key under the timed
+# query. non_index_updates still generates versions.
 export HTAP_OLTP_INDEX_UPDATES="0"       # sysbench --index_updates (0 = leave k alone)
 export HTAP_OLTP_DELETE_INSERTS="0"      # sysbench --delete_inserts (0 = leave k alone)
 export HTAP_OLTP_NON_INDEX_UPDATES="2"   # sysbench --non_index_updates (version generation)
+# A full scan measures the average version count, and pareto leaves most rows at
+# one version. Set back to pareto for the skewed end of a sweep.
+export HTAP_OLTP_RAND_TYPE="uniform"     # sysbench --rand-type for the OLTP access pattern
 export HTAP_SELECTIVITY_CUTOFFS="1000 10000 30000 60000 90000"  # Selectivity sweep
 export HTAP_QUERY_TIMEOUT="7200"         # Max seconds per analytical query (MySQL max_execution_time)
-# max_execution_time does not help when a join spills faster than it runs: a skewed k
-# made join4.sql estimate ~1e16 output rows, and it filled the tmpdir filesystem and
-# died at ENOSPC in ~600s, every run, for months. This makes the optimizer refuse such a
-# plan up front instead. Healthy uniform-k runs estimate ~1e5, far under the bound.
+# max_execution_time does not help when a join fills the tmpdir faster than it runs.
+# This makes the optimizer refuse such a plan up front instead.
 export HTAP_MAX_JOIN_SIZE="1000000000000" # Reject plans estimating more examined rows (empty = no limit)
-# perf is killed as soon as the query returns, so DURATION is only a ceiling. DELAY was
-# sized for the old multi-minute runs; with a feasible join the query finishes in
-# seconds, and any delay at all means recording starts after it is already over.
+# perf is killed as soon as the query returns, so DURATION is only a ceiling. Any
+# DELAY at all means recording starts after a seconds-long query is already over.
 export HTAP_PERF_DURATION="120"          # Ceiling on recording per OLAP run (perf is stopped when the query ends)
 export HTAP_PERF_DELAY="0"               # Seconds to delay before recording starts
 export HTAP_PERF_FREQ="499"              # perf sampling frequency (Hz); short runs need more than 49

@@ -172,9 +172,8 @@ capture_data_profile() {
     log_info "Data profile saved to: ${result_dir}/data_profile.csv"
 }
 
-# SST entries per live row in sbtest1-4 -- the average on-disk version chain length.
-# Below ~2.0 there are no redundant versions for the filter to drop. Reads
-# information_schema only, so it doesn't warm the cache the next run wants cold.
+# SST entries per live row in sbtest1-4: the average on-disk version chain length.
+# Reads information_schema only, so it does not warm the cache the next run wants cold.
 measure_version_amplification() {
     local live_rows=$(( HTAP_TABLE_SIZE * 4 ))
     mysql --socket="$SOCKET" -N --batch 2>/dev/null -e "
@@ -528,8 +527,8 @@ fi
 EFFECTIVE_OLAP_RUNS=$(( HTAP_OLAP_RUNS + (RUN_START == 0 ? 1 : 0) ))
 FLUSH_SETTLE_OVERHEAD=$(( 30 * (EFFECTIVE_OLAP_RUNS - 1) ))
 
-# Warmup has to outlast the LLT staggering window, or early runs see fewer pinned
-# snapshots than later ones and differ in retained versions for no useful reason.
+# Warmup must outlast the LLT staggering window, or early runs see fewer snapshots
+# than later ones.
 LLT_STAGGER_WINDOW=$(( HTAP_LLT_COUNT * ${HTAP_LLT_STAGGER_SECS:-0} ))
 if [ "$HTAP_WARMUP_DURATION" -lt "$LLT_STAGGER_WINDOW" ]; then
     log_info "HTAP_WARMUP_DURATION=${HTAP_WARMUP_DURATION}s is shorter than the LLT staggering window (${LLT_STAGGER_WINDOW}s), extending it so every OLAP run sees all ${HTAP_LLT_COUNT} snapshots"
@@ -569,6 +568,7 @@ CONFIG_LOG="${RESULT_DIR}/profiling_config.log"
     echo "HTAP_OLTP_THREADS: $HTAP_OLTP_THREADS"
     echo "HTAP_LLT_COUNT: $HTAP_LLT_COUNT"
     echo "HTAP_LLT_STAGGER_SECS: ${HTAP_LLT_STAGGER_SECS:-0}"
+    echo "HTAP_OLTP_RAND_TYPE: ${HTAP_OLTP_RAND_TYPE:-uniform}"
     echo "HTAP_OLTP_INDEX_UPDATES: ${HTAP_OLTP_INDEX_UPDATES:-1} (0 = join key k frozen after prepare)"
     echo "HTAP_OLTP_DELETE_INSERTS: ${HTAP_OLTP_DELETE_INSERTS:-1}"
     echo "HTAP_OLTP_NON_INDEX_UPDATES: ${HTAP_OLTP_NON_INDEX_UPDATES:-1}"
@@ -590,7 +590,7 @@ CONFIG_LOG="${RESULT_DIR}/profiling_config.log"
     echo "NOTE: k index dropped on all tables (non-indexed join per AIDE paper)"
     echo "NOTE: LLTs hold GC back so versions accumulate across OLAP runs (version pressure visible in flamegraphs)"
     echo "NOTE: LLT sleep = HTAP_WARMUP_DURATION + HTAP_OLAP_RUNS * HTAP_QUERY_TIMEOUT + FLUSH_SETTLE_OVERHEAD = ${LLT_SLEEP_DURATION}s (covers full experimental window, including per-run re-flush waits)"
-    echo "NOTE: OLTP rand-type=pareto (skewed, hot rows accumulate long version chains per LLT paper §5.2.1)"
+    echo "NOTE: OLTP rand-type=${HTAP_OLTP_RAND_TYPE:-uniform} (uniform spreads versions across all rows; pareto concentrates them on hot rows)"
     echo "NOTE: Analytical sessions use REPEATABLE-READ (per AIDE §6.3 + LLT paper §5.1)"
     echo "NOTE: Memtable flushed before OLAP phase + 30s compaction settling wait (ensures versions in SSTables, stable background I/O)"
     echo "NOTE: ANALYZE TABLE run before OLAP loop to stabilise optimizer row estimates (MyRocks SST sampling unreliable)"
@@ -656,7 +656,7 @@ sysbench oltp_read_write \
     --table-size="$HTAP_TABLE_SIZE" \
     --threads="$HTAP_OLTP_THREADS" \
     --time="$OLTP_TOTAL" \
-    --rand-type=pareto \
+    --rand-type="${HTAP_OLTP_RAND_TYPE:-uniform}" \
     --index_updates="${HTAP_OLTP_INDEX_UPDATES:-1}" \
     --delete_inserts="${HTAP_OLTP_DELETE_INSERTS:-1}" \
     --non_index_updates="${HTAP_OLTP_NON_INDEX_UPDATES:-1}" \
@@ -675,11 +675,9 @@ for (( i=1; i<=HTAP_LLT_COUNT; i++ )); do
     # wait_timeout covers idle connections; net_read_timeout/net_write_timeout
     # cover active long-running queries (SELECT SLEEP is an active query).
     #
-    # The reads before the sleep are load-bearing: MyRocks acquires the snapshot on
-    # the transaction's first table access, so the old `START TRANSACTION;
-    # SELECT SLEEP(n)` body pinned nothing at all. The leading sleep staggers each
-    # snapshot onto a distinct sequence number -- simultaneous LLTs share one
-    # compaction stripe, which caps retention at 2 versions per key.
+    # The reads are load-bearing: MyRocks acquires the snapshot on the first table
+    # access, so `START TRANSACTION; SELECT SLEEP(n)` alone pins nothing. The leading
+    # sleep puts each snapshot on a distinct sequence number.
     llt_offset=$(( (i - 1) * LLT_STAGGER ))
     llt_remaining=$(( LLT_SLEEP_DURATION - llt_offset ))
     [ "$llt_remaining" -lt 1 ] && llt_remaining=1
@@ -905,8 +903,8 @@ SQL
 
         read -r sst_entries version_amp <<<"$(measure_version_amplification)"
         log_info "  Run ${RUN}: offload-CF SST entries=${sst_entries:-0} for $(( HTAP_TABLE_SIZE * 4 )) live rows (version amplification ${version_amp:-0}x)"
-        # Amplification A caps the achievable filter ratio at (A-1)/A, so 2.0x is a
-        # healthy ~0.5 ceiling. Only flag values close to 1.0, where nothing is droppable.
+        # Amplification A caps the achievable filter ratio at (A-1)/A, so only flag
+        # values near 1.0, where nothing is droppable.
         if awk "BEGIN{exit !(${version_amp:-0} < 1.2)}"; then
             log_error "  WARNING: version amplification ${version_amp:-0}x leaves at most $(awk "BEGIN{printf \"%.2f\", (${version_amp:-1}-1)/${version_amp:-1}}") of entries droppable."
             log_error "           Check that the LLTs are actually holding RocksDB snapshots (ROCKSDB_TRX should be non-zero)."
@@ -1059,9 +1057,8 @@ SQL
     elapsed=$(echo "$end_time - $start_time" | bc)
     PERF_ELAPSED[$RUN]=$elapsed
 
-    # Did the query actually produce an answer? No archived session's output has a
-    # result row between the markers, which means elapsed has been measuring
-    # time-to-failure -- `--force` plus a discarded stderr hid the reason.
+    # Did the query produce an answer? Without this, a failing query is timed as if it
+    # succeeded, since `--force` plus a discarded stderr hides the error.
     query_result=$(echo "$raw_output" \
         | awk '/^QUERY_BEGIN/{f=1;next} /^QUERY_END/{exit} f && !/^q_marker$/' | tail -1)
     if [ -n "$query_result" ]; then
