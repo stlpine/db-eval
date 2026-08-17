@@ -369,16 +369,16 @@ MYSQL_LIB_PATH=$(mysql_config --variable=pkglibdir 2>/dev/null || true)
 # ── Initialise CSVs ───────────────────────────────────────────────────────────
 
 if [ "$ENGINE" = "percona-myrocks" ]; then
-    echo "run,query_ok,elapsed_s,cutoff,rows_scanned,sst_entries,version_amp,internal_key_skipped_count_delta,internal_delete_skipped_count_delta,get_snapshot_time_ns_delta,block_read_count_delta,block_read_byte_delta,block_read_time_ns_delta,get_from_memtable_count_delta,get_from_output_files_time_ns_delta" \
+    echo "run,query_ok,elapsed_s,cutoff,rows_scanned,sst_entries,version_amp,key_skipped_all_connections_delta,internal_delete_skipped_count_delta,get_snapshot_time_ns_delta,block_read_count_delta,block_read_byte_delta,block_read_time_ns_delta,get_from_memtable_count_delta,get_from_output_files_time_ns_delta" \
         > "${RESULT_DIR}/htap_olap_runs.csv"
 elif [ "$ENGINE" = "percona-myrocks-csd" ]; then
-    echo "run,query_ok,elapsed_s,cutoff,rows_scanned,sst_entries,version_amp,internal_key_skipped_count_delta,internal_delete_skipped_count_delta,get_snapshot_time_ns_delta,block_read_count_delta,block_read_byte_delta,block_read_time_ns_delta,get_from_memtable_count_delta,get_from_output_files_time_ns_delta,csd_keys_seen,csd_keys_filtered,csd_freeze_ns" \
+    echo "run,query_ok,elapsed_s,cutoff,rows_scanned,sst_entries,version_amp,key_skipped_all_connections_delta,internal_delete_skipped_count_delta,get_snapshot_time_ns_delta,block_read_count_delta,block_read_byte_delta,block_read_time_ns_delta,get_from_memtable_count_delta,get_from_output_files_time_ns_delta,csd_keys_seen,csd_keys_filtered,csd_freeze_ns" \
         > "${RESULT_DIR}/htap_olap_runs.csv"
 elif [ "$ENGINE" = "percona-myrocks-nvmevirt" ]; then
     # No freeze_ns column -- FLAX's v1 offload only blocks the calling mysqld
     # thread on its own SST read, not the whole guest, so there's no
     # equivalent counter to report.
-    echo "run,query_ok,elapsed_s,cutoff,rows_scanned,sst_entries,version_amp,internal_key_skipped_count_delta,internal_delete_skipped_count_delta,get_snapshot_time_ns_delta,block_read_count_delta,block_read_byte_delta,block_read_time_ns_delta,get_from_memtable_count_delta,get_from_output_files_time_ns_delta,nvmevirt_keys_seen,nvmevirt_keys_filtered" \
+    echo "run,query_ok,elapsed_s,cutoff,rows_scanned,sst_entries,version_amp,key_skipped_all_connections_delta,internal_delete_skipped_count_delta,get_snapshot_time_ns_delta,block_read_count_delta,block_read_byte_delta,block_read_time_ns_delta,get_from_memtable_count_delta,get_from_output_files_time_ns_delta,nvmevirt_keys_seen,nvmevirt_keys_filtered" \
         > "${RESULT_DIR}/htap_olap_runs.csv"
 else
     echo "run,query_ok,elapsed_s,cutoff,rows_scanned,handler_read_key,innodb_rows_read_delta,innodb_buffer_pool_reads_delta,innodb_buffer_pool_read_requests_delta,innodb_pages_read_delta,innodb_data_reads_delta,innodb_data_read_bytes_delta" \
@@ -438,7 +438,6 @@ if [ "$IS_NVMEVIRT" = "true" ]; then
     fi
 fi
 
-capture_data_profile "$RESULT_DIR"
 capture_index_ddl_map "$RESULT_DIR"
 
 # Stabilise optimizer statistics before any workload starts.
@@ -459,6 +458,9 @@ for _tbl in sbtest1 sbtest2 sbtest3 sbtest4; do
         -e "ANALYZE TABLE ${_tbl} UPDATE HISTOGRAM ON k WITH 254 BUCKETS;" || \
         log_error "  WARNING: histogram on ${_tbl} failed (non-fatal)"
 done
+
+# After ANALYZE: TABLE_ROWS comes from RocksDB's SST estimate, stale before it.
+capture_data_profile "$RESULT_DIR"
 
 # Capture the schema of information_schema.ROCKSDB_PERF_CONTEXT for reference.
 # Confirmed schema: key-value — (TABLE_SCHEMA, TABLE_NAME, PARTITION_NAME, STAT_TYPE, VALUE).
@@ -736,6 +738,9 @@ fi
 
 # ── Phase 6: Periodic perf context snapshots (background loop) ───────────────
 
+if [ "${HTAP_CTX_INTERVAL:-0}" -le 0 ]; then
+    log_info "Version growth snapshot loop disabled (HTAP_CTX_INTERVAL=${HTAP_CTX_INTERVAL:-0}); per-run version_amp supersedes it"
+else
 log_info "Starting version growth snapshot loop (interval: ${HTAP_CTX_INTERVAL}s)..."
 (
     snapshot_num=0
@@ -804,6 +809,7 @@ PROBE_SQL
 ) &
 SNAPSHOT_PID=$!
 log_info "Snapshot loop PID: $SNAPSHOT_PID"
+fi
 
 # ── Phase 7: Analytical query profiling loop ──────────────────────────────────
 
@@ -1334,6 +1340,11 @@ for RUN in $(seq "$RUN_START" "$HTAP_OLAP_RUNS"); do
         log_error "  Run ${RUN}: perf data missing or empty, skipping flamegraph"
     fi
 done
+
+if [ "$IS_NVMEVIRT" = "true" ] && [ -f /tmp/nvmevirt_debug.log ]; then
+    ${BENCH_SUDO-sudo} cp /tmp/nvmevirt_debug.log "${RESULT_DIR}/nvmevirt_debug.log" 2>/dev/null \
+        && log_info "  nvmevirt debug log saved to: ${RESULT_DIR}/nvmevirt_debug.log"
+fi
 
 # ── Phase 9: Capture mysqld's error log ──────────────────────────────────────
 # Queried directly from the running server rather than derived from a

@@ -105,7 +105,7 @@ export SYSBENCH_TPCC_USE_FK="0"           # Disable foreign keys for fair MyRock
 
 # HTAP Profiling Configuration (AIDE VLDB'23 §6.4 + SIGMOD'20 LLT paper)
 export HTAP_TABLES="12"                  # Tables (AIDE: 12)
-export HTAP_TABLE_SIZE="100000"          # Rows per table (AIDE: 100k)
+export HTAP_TABLE_SIZE="2000000"         # Rows per table (AIDE: 100k; raised 20x for ~20s runs)
 export HTAP_OLTP_THREADS="24"            # Concurrent update workers (AIDE: 24)
 # RocksDB keeps one version per key per distinct snapshot, so N staggered LLTs
 # retain up to N+1 versions; opening them all at once gives just one.
@@ -115,9 +115,9 @@ export HTAP_LLT_COUNT="4"                # Long-lived transactions holding GC ba
 export HTAP_LLT_STAGGER_SECS="240"       # Gap between consecutive LLT snapshots (0 = all at once)
 export HTAP_WARMUP_DURATION="960"        # Warmup before analytical phase (seconds); covers HTAP_LLT_COUNT * stagger
 export HTAP_DURATION="600"               # Total analytical window duration (seconds)
-export HTAP_CTX_INTERVAL="30"            # Perf context snapshot interval (seconds)
+export HTAP_CTX_INTERVAL="0"             # Version-growth probe interval (0 = disabled)
 export HTAP_OLAP_RUNS="5"               # Analytical query runs per session
-export HTAP_JOIN_CUTOFF="90000"          # Default k <= cutoff (~90% selectivity)
+export HTAP_JOIN_CUTOFF="1800000"        # k <= cutoff (~90% of HTAP_TABLE_SIZE)
 # join4.sql's output is SUM over k of n1(k)*n2(k)*n3(k)*n4(k); sysbench's default
 # skew explodes that to ~1e16 rows. Uniform keeps it ~O(table_size).
 export HTAP_JOIN_KEY_RAND_TYPE="uniform" # sysbench --rand-type used at PREPARE time (sets k's distribution)

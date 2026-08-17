@@ -186,6 +186,10 @@ init_mysql() {
     INIT_CONFIG="$CONFIG_FILE"
     if [ "$ENGINE" = "percona-myrocks" ] || [ "$ENGINE" = "percona-myrocks-csd" ] || [ "$ENGINE" = "percona-myrocks-nvmevirt" ]; then
         INIT_CONFIG="/tmp/my-${ENGINE}-init.cnf"
+        # fs.protected_regular denies writing an existing file in a sticky dir
+        # when its owner differs from both the dir owner and the caller, with no
+        # root exemption. Delete first so a stale one cannot block the write.
+        ${BENCH_SUDO-sudo} rm -f "$INIT_CONFIG"
         grep -v -E "^default-storage-engine|^plugin-load|^rocksdb|^basedir" "$CONFIG_FILE" > "$INIT_CONFIG"
         # Inject the correct basedir so --initialize finds the right install prefix
         echo "basedir = $(dirname "$(dirname "$MYSQLD_BIN")")" >> "$INIT_CONFIG"
