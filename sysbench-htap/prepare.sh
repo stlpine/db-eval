@@ -141,8 +141,12 @@ if [ -n "$CF_NAME" ]; then
         # run, see project_flax_integration_status memory). Now hard-fails on
         # either an ALTER error or a silent row-count drop, instead of only
         # surfacing hours later when the join produces an empty result.
+        # The rewrite locks every row in one transaction, so it exceeds
+        # rocksdb_max_row_locks (default 1048576) above ~1M rows. Session-scoped
+        # so the measured workload keeps the default.
         mysql --socket="$SOCKET" "$BENCHMARK_DB" \
-            -e "ALTER TABLE sbtest${N} DROP PRIMARY KEY,
+            -e "SET SESSION rocksdb_max_row_locks = $(( HTAP_TABLE_SIZE * 2 ));
+                ALTER TABLE sbtest${N} DROP PRIMARY KEY,
                     ADD PRIMARY KEY (id) COMMENT 'cfname=${CF_NAME}';" || {
             log_error "  CF migration FAILED for sbtest${N} (ALTER TABLE error) -- aborting"
             exit 1
