@@ -1342,7 +1342,10 @@ for RUN in $(seq "$RUN_START" "$HTAP_OLAP_RUNS"); do
 done
 
 if [ "$IS_NVMEVIRT" = "true" ] && [ -f /tmp/nvmevirt_debug.log ]; then
+    # chmod: the source is 0640 root-owned, and the end-of-session chown uses
+    # SUDO_USER, which is root under the nested sudo, so the copy stays unreadable.
     ${BENCH_SUDO-sudo} cp /tmp/nvmevirt_debug.log "${RESULT_DIR}/nvmevirt_debug.log" 2>/dev/null \
+        && ${BENCH_SUDO-sudo} chmod 644 "${RESULT_DIR}/nvmevirt_debug.log" \
         && log_info "  nvmevirt debug log saved to: ${RESULT_DIR}/nvmevirt_debug.log"
 fi
 
