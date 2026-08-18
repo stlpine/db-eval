@@ -104,20 +104,20 @@ export SYSBENCH_TPCC_USE_FK="0"           # Disable foreign keys for fair MyRock
 # Note: transaction-isolation and collation are set in my-*.cnf server configs
 
 # HTAP Profiling Configuration (AIDE VLDB'23 §6.4 + SIGMOD'20 LLT paper)
-export HTAP_TABLES="12"                  # Tables (AIDE: 12)
-export HTAP_TABLE_SIZE="2000000"         # Rows per table (AIDE: 100k; raised 20x for ~20s runs)
+export HTAP_TABLES="4"                   # Tables (AIDE: 12; only sbtest1-4 are scanned, so this puts the whole write budget on them)
+export HTAP_TABLE_SIZE="400000"          # Rows per table (AIDE: 100k)
 export HTAP_OLTP_THREADS="24"            # Concurrent update workers (AIDE: 24)
 # RocksDB keeps one version per key per distinct snapshot, so N staggered LLTs
 # retain up to N+1 versions; opening them all at once gives just one.
-export HTAP_LLT_COUNT="4"                # Long-lived transactions holding GC back (LLT paper: 4)
-# 240s is roughly how long the average row takes to be updated at this load;
-# shorter windows retain nothing new for most rows.
-export HTAP_LLT_STAGGER_SECS="240"       # Gap between consecutive LLT snapshots (0 = all at once)
-export HTAP_WARMUP_DURATION="960"        # Warmup before analytical phase (seconds); covers HTAP_LLT_COUNT * stagger
+export HTAP_LLT_COUNT="11"               # Long-lived transactions holding GC back (LLT paper: 4); caps version amplification at COUNT+1
+# A stripe only retains a version for rows updated inside it, so the window must
+# exceed the average time to touch a row: 1.6M rows / ~16k updates per sec ~= 100s.
+export HTAP_LLT_STAGGER_SECS="120"       # Gap between consecutive LLT snapshots (0 = all at once)
+export HTAP_WARMUP_DURATION="1320"       # Warmup before analytical phase (seconds); covers HTAP_LLT_COUNT * stagger
 export HTAP_DURATION="600"               # Total analytical window duration (seconds)
 export HTAP_CTX_INTERVAL="0"             # Version-growth probe interval (0 = disabled)
 export HTAP_OLAP_RUNS="5"               # Analytical query runs per session
-export HTAP_JOIN_CUTOFF="1800000"        # k <= cutoff (~90% of HTAP_TABLE_SIZE)
+export HTAP_JOIN_CUTOFF="360000"         # k <= cutoff (~90% of HTAP_TABLE_SIZE)
 # join4.sql's output is SUM over k of n1(k)*n2(k)*n3(k)*n4(k); sysbench's default
 # skew explodes that to ~1e16 rows. Uniform keeps it ~O(table_size).
 export HTAP_JOIN_KEY_RAND_TYPE="uniform" # sysbench --rand-type used at PREPARE time (sets k's distribution)
@@ -125,7 +125,7 @@ export HTAP_JOIN_KEY_RAND_TYPE="uniform" # sysbench --rand-type used at PREPARE 
 # query. non_index_updates still generates versions.
 export HTAP_OLTP_INDEX_UPDATES="0"       # sysbench --index_updates (0 = leave k alone)
 export HTAP_OLTP_DELETE_INSERTS="0"      # sysbench --delete_inserts (0 = leave k alone)
-export HTAP_OLTP_NON_INDEX_UPDATES="2"   # sysbench --non_index_updates (version generation)
+export HTAP_OLTP_NON_INDEX_UPDATES="4"   # sysbench --non_index_updates (version generation)
 # A full scan measures the average version count, and pareto leaves most rows at
 # one version. Set back to pareto for the skewed end of a sweep.
 export HTAP_OLTP_RAND_TYPE="uniform"     # sysbench --rand-type for the OLTP access pattern
