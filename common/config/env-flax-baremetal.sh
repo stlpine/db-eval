@@ -34,8 +34,12 @@
 # that much longer to accumulate before the snapshot). 8G gives ~1.6x
 # headroom over the observed peak. Re-check after the first --with-cgroup
 # run for OOM kills or any sign the limit itself became a new confound.
+#
+# Re-sized 2026-08-18 for the 4x400k config: mysqld VmHWM is now 2.96GB and the
+# page cache during a cold run reaches ~4GB, so the run-time peak is ~7GB. 12G
+# keeps the same ~1.6x headroom ratio the 8G figure was chosen with.
 export FLAX_CGROUP_NAME="flax_memory_group"
-export FLAX_CGROUP_MEMORY_LIMIT="8G"
+export FLAX_CGROUP_MEMORY_LIMIT="12G"
 
 # --- TEMPORARY: deliberately short timeout, join-cardinality-vs-snapshot
 # diagnostic session ---

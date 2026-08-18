@@ -862,10 +862,10 @@ for RUN in $(seq "$RUN_START" "$HTAP_OLAP_RUNS"); do
         sleep 30
     fi
 
-    # Every run measures cold storage reads, not cache hits. Run 1 already
-    # starts cold via start_mysql_cold(); reset both cache layers before
-    # every later run too.
-    if [ "$IS_MYROCKS" = "true" ] && [ "$RUN" -gt 1 ]; then
+    # Every run measures cold storage reads, not cache hits. Run 1 included:
+    # start_mysql_cold() runs before the warmup, so by run 1 the warmup's OLTP
+    # has already refilled the page cache (23GB observed, vs 4GB on later runs).
+    if [ "$IS_MYROCKS" = "true" ]; then
         drop_page_cache
         orig_cache_size=$(mysql --socket="$SOCKET" -N -e \
             "SELECT @@global.rocksdb_block_cache_size;" 2>/dev/null)
